@@ -2,7 +2,7 @@ PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 CARGO ?= cargo
 
-.PHONY: all build install uninstall test check fmt clean
+.PHONY: all build install uninstall test check fmt pkg clean
 
 all: build
 
@@ -11,6 +11,10 @@ build:
 
 install: build
 	install -Dm755 target/release/rsztui $(DESTDIR)$(BINDIR)/rsztui
+
+pkg:
+	cd packaging/aur && makepkg -f --noconfirm
+	@ls -lh packaging/aur/*.pkg.tar.zst
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/rsztui

@@ -46,6 +46,29 @@ paru -S rsztui
 
 AUR 包名是 `rsztui`，安装后的命令也是 `rsztui`。
 
+### AUR 注册暂时关闭时
+
+AUR 目前暂停新账号注册。可以直接构建 pacman 包：
+
+```bash
+cd RszTui
+make pkg
+paru -U packaging/aur/rsztui-0.4.0-1-x86_64.pkg.tar.zst
+```
+
+或者不生成包文件，直接用 paru 从本地 PKGBUILD 构建安装：
+
+```bash
+cd RszTui/packaging/aur
+paru -Bi
+```
+
+仓库里已加 GitHub Actions：推送 `v*` tag 时会自动在 Arch 容器里构建 `.pkg.tar.zst` 并附加到 GitHub Release，之后可以直接：
+
+```bash
+paru -U https://github.com/Ricarsz/RszTui/releases/download/v0.4.0/rsztui-0.4.0-1-x86_64.pkg.tar.zst
+```
+
 ### 从本地 PKGBUILD 安装
 
 还没发布到 AUR 时，可以直接用 paru 构建当前目录：
