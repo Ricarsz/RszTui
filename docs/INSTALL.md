@@ -3,16 +3,6 @@
 包名：`rsztui`  
 安装后的命令：`rsztui`
 
-## AUR
-
-AUR 发布后：
-
-```bash
-paru -S rsztui
-```
-
-AUR 账号/SSH key/首次发布步骤见 [AUR.md](AUR.md)。AUR 新账号注册偶尔会临时关闭，期间请用下面的本地方式。
-
 ## 本地 PKGBUILD
 
 ```bash
@@ -42,7 +32,7 @@ packaging/aur/rsztui-<版本>-1-x86_64.pkg.tar.zst
 安装：
 
 ```bash
-paru -U packaging/aur/rsztui-0.5.0-1-x86_64.pkg.tar.zst
+paru -U packaging/aur/rsztui-0.6.0-1-x86_64.pkg.tar.zst
 # 或 sudo pacman -U ...
 ```
 
@@ -68,7 +58,7 @@ sudo make install    # 安装到 /usr/local/bin/rsztui
 
 ```bash
 sudo make uninstall
-# AUR / pacman 安装则：
+# pacman 安装则：
 sudo pacman -R rsztui
 ```
 

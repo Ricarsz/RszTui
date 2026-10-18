@@ -1,13 +1,16 @@
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
 use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyEventState, KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use ratatui::DefaultTerminal;
+use ratatui::layout::Rect;
 
 use crate::asus::{self, BatteryInfo, GpuMode, PowerField, PowerSource, Profile, ProfileState};
 use crate::config::{Config, FanPreset};
@@ -215,6 +218,24 @@ pub enum InputAction {
     Hotspot,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum MouseAction {
+    Tab(Tab),
+    Profile(usize),
+    PerfPreset(usize),
+    PowerField(usize),
+    FanPreset(usize),
+    FanPoint(usize),
+    Net(usize),
+    Service(usize),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MouseTarget {
+    pub rect: Rect,
+    pub action: MouseAction,
+}
+
 #[derive(Debug)]
 pub enum Pending {
     Profile(Profile),
@@ -309,6 +330,7 @@ pub struct App {
     pub status: String,
     pub status_err: bool,
     pub modal: Option<Modal>,
+    pub mouse_targets: RefCell<Vec<MouseTarget>>,
     pub quit: bool,
     last_slow: Instant,
     last_tick: Instant,
@@ -324,10 +346,15 @@ pub fn run(cfg: Config, report: deps::Report) -> Result<()> {
         PushKeyboardEnhancementFlags(
             KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
                 | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
-        )
+        ),
+        EnableMouseCapture
     );
     let result = app.event_loop(&mut terminal);
-    let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+    let _ = execute!(
+        std::io::stdout(),
+        PopKeyboardEnhancementFlags,
+        DisableMouseCapture
+    );
     ratatui::restore();
     result
 }
@@ -381,6 +408,7 @@ impl App {
             status: "就绪".into(),
             status_err: false,
             modal: None,
+            mouse_targets: RefCell::new(Vec::new()),
             quit: false,
             last_slow: Instant::now(),
             last_tick: Instant::now(),
@@ -420,15 +448,24 @@ impl App {
                 dirty = false;
             }
 
-            if event::poll(Duration::from_millis(200))?
-                && let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
-            {
-                if let Err(err) = self.handle_key(key) {
-                    self.status = format!("错误：{err:#}");
-                    self.status_err = true;
+            if event::poll(Duration::from_millis(200))? {
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        if let Err(err) = self.handle_key(key) {
+                            self.status = format!("错误：{err:#}");
+                            self.status_err = true;
+                        }
+                        dirty = true;
+                    }
+                    Event::Mouse(mouse) => {
+                        if let Err(err) = self.handle_mouse(mouse) {
+                            self.status = format!("错误：{err:#}");
+                            self.status_err = true;
+                        }
+                        dirty = true;
+                    }
+                    _ => {}
                 }
-                dirty = true;
             }
 
             if self.last_tick.elapsed() >= Duration::from_secs(1) {
@@ -521,6 +558,78 @@ impl App {
             modifiers: key.modifiers,
             kind: key.kind,
             state: key.state,
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
+        if self.modal.is_some() {
+            return Ok(());
+        }
+
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let action = {
+                    let targets = self.mouse_targets.borrow();
+                    targets
+                        .iter()
+                        .rev()
+                        .find(|target| point_in(target.rect, mouse.column, mouse.row))
+                        .map(|target| target.action)
+                };
+                if let Some(action) = action {
+                    self.activate_mouse(action);
+                }
+            }
+            MouseEventKind::ScrollUp => self.scroll(-1)?,
+            MouseEventKind::ScrollDown => self.scroll(1)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn scroll(&mut self, direction: i32) -> Result<()> {
+        if self.ip_form.is_some() {
+            return Ok(());
+        }
+        let code = if direction < 0 {
+            KeyCode::Up
+        } else {
+            KeyCode::Down
+        };
+        self.handle_tab_key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    fn activate_mouse(&mut self, action: MouseAction) {
+        match action {
+            MouseAction::Tab(tab) => self.switch_tab(tab),
+            MouseAction::Profile(index) => {
+                self.perf_focus = PerfFocus::Profiles;
+                self.profile_sel = index.min(Profile::ALL.len().saturating_sub(1));
+            }
+            MouseAction::PerfPreset(index) => {
+                self.preset_sel = index.min(self.cfg.power_presets.len().saturating_sub(1));
+            }
+            MouseAction::PowerField(index) => {
+                self.perf_focus = PerfFocus::Power;
+                self.power_sel = index.min(self.power.len().saturating_sub(1));
+            }
+            MouseAction::FanPreset(index) => {
+                self.fan_sel = index.min(self.cfg.fan_presets.len().saturating_sub(1));
+            }
+            MouseAction::FanPoint(index) => {
+                if let Some(edit) = self.fan_edit.as_mut()
+                    && index < edit.temp.len()
+                {
+                    edit.sel = index;
+                }
+            }
+            MouseAction::Net(index) => {
+                self.net_sel = index.min(self.net_len().saturating_sub(1));
+                self.refresh_net_detail();
+            }
+            MouseAction::Service(index) => {
+                self.service_sel = index.min(self.services.len().saturating_sub(1));
+            }
         }
     }
 
@@ -1650,6 +1759,13 @@ impl App {
     }
 }
 
+fn point_in(rect: Rect, x: u16, y: u16) -> bool {
+    x >= rect.x
+        && x < rect.x.saturating_add(rect.width)
+        && y >= rect.y
+        && y < rect.y.saturating_add(rect.height)
+}
+
 fn push_hist(hist: &mut VecDeque<u64>, value: u64) {
     if hist.len() >= HISTORY {
         hist.pop_front();
@@ -1724,6 +1840,7 @@ fn help_text() -> String {
     [
         "全局",
         "  Tab / Shift+Tab  切换页面     1-8  直接跳转",
+        "  鼠标：点击左侧导航/列表行，滚轮上下选择",
         "  r 刷新   ? 帮助   q 退出      Ctrl+C 立即退出",
         "",
         "性能",

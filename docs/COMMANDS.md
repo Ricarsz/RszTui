@@ -114,7 +114,7 @@ sudo rsztui service disable asus-shutdown --now
 | `q` | 退出（确认） |
 | `Ctrl+C` | 立即退出 |
 
-小键盘：NumLock 关闭时直接发方向键；NumLock 开启且终端支持 Kitty 键盘协议时，`8/2/4/6/5` 映射为上/下/左/右/确认。
+鼠标：点击左侧导航切换页面，点击列表行选中，滚轮上下移动当前列表。小键盘：NumLock 关闭时直接发方向键；NumLock 开启且终端支持 Kitty 键盘协议时，`8/2/4/6/5` 映射为上/下/左/右/确认。
 
 ### 性能
 

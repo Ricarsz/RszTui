@@ -4,7 +4,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Clear, Gauge, Paragraph, Sparkline, Wrap};
 
-use crate::app::{AURA_COLORS, App, IpForm, Modal, NetView, Tab};
+use crate::app::{AURA_COLORS, App, IpForm, Modal, MouseAction, MouseTarget, NetView, Tab};
 use crate::asus::{self, GpuMode, Profile};
 use crate::nm;
 use crate::util;
@@ -17,6 +17,7 @@ const BAD: Color = Color::Rgb(255, 110, 90);
 const PANEL_BORDER: Color = Color::Rgb(70, 78, 90);
 
 pub fn draw(frame: &mut Frame, app: &App) {
+    app.mouse_targets.borrow_mut().clear();
     let area = frame.area();
     let chunks = Layout::vertical([
         Constraint::Length(3),
@@ -92,6 +93,16 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
 fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = Vec::new();
     for (index, tab) in Tab::ALL.iter().enumerate() {
+        record_mouse(
+            app,
+            Rect::new(
+                area.x + 1,
+                area.y + 1 + index as u16,
+                area.width.saturating_sub(2),
+                1,
+            ),
+            MouseAction::Tab(*tab),
+        );
         let selected = *tab == app.tab;
         let marker = if selected { "▶" } else { " " };
         let style = if selected {
@@ -523,6 +534,11 @@ fn draw_profiles(frame: &mut Frame, area: Rect, app: &App) {
     let state = app.profile;
     let mut lines = Vec::new();
     for (index, profile) in Profile::ALL.iter().enumerate() {
+        record_mouse(
+            app,
+            Rect::new(inner.x, inner.y + index as u16, inner.width, 1),
+            MouseAction::Profile(index),
+        );
         let selected = index == app.profile_sel;
         let active = state.map(|s| s.active == *profile).unwrap_or(false);
         let ac = state.map(|s| s.ac == *profile).unwrap_or(false);
@@ -611,6 +627,11 @@ fn draw_presets(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut lines = Vec::new();
     for (index, preset) in app.cfg.power_presets.iter().enumerate() {
+        record_mouse(
+            app,
+            Rect::new(inner.x, inner.y + index as u16, inner.width, 1),
+            MouseAction::PerfPreset(index),
+        );
         let selected = index == app.preset_sel;
         let marker = if selected { "▶" } else { " " };
         let style = if selected {
@@ -650,6 +671,11 @@ fn draw_power_fields(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut lines = Vec::new();
     for (index, field) in app.power.iter().enumerate() {
+        record_mouse(
+            app,
+            Rect::new(inner.x, inner.y + index as u16, inner.width, 1),
+            MouseAction::PowerField(index),
+        );
         let selected = index == app.power_sel && focused;
         let style = if selected {
             Style::new()
@@ -830,7 +856,7 @@ fn draw_fan(frame: &mut Frame, area: Rect, app: &App) {
     let cols =
         Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).split(rows[1]);
     if let Some(edit) = &app.fan_edit {
-        draw_fan_editor(frame, cols[0], edit);
+        draw_fan_editor(frame, cols[0], app, edit);
     } else {
         draw_fan_detail(frame, cols[0], app);
     }
@@ -986,7 +1012,7 @@ fn draw_fan_detail(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_fan_editor(frame: &mut Frame, area: Rect, edit: &crate::app::FanEdit) {
+fn draw_fan_editor(frame: &mut Frame, area: Rect, app: &App, edit: &crate::app::FanEdit) {
     let title = format!(
         " 编辑 {} 曲线{} ",
         edit.fan.to_uppercase(),
@@ -999,6 +1025,11 @@ fn draw_fan_editor(frame: &mut Frame, area: Rect, edit: &crate::app::FanEdit) {
     let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(inner);
     let mut lines = Vec::new();
     for index in 0..edit.temp.len() {
+        record_mouse(
+            app,
+            Rect::new(rows[0].x, rows[0].y + index as u16, rows[0].width, 1),
+            MouseAction::FanPoint(index),
+        );
         let selected = index == edit.sel;
         let style = if selected {
             Style::new()
@@ -1057,6 +1088,11 @@ fn draw_fan_presets(frame: &mut Frame, area: Rect, app: &App) {
         )));
     } else {
         for (index, preset) in app.cfg.fan_presets.iter().enumerate() {
+            record_mouse(
+                app,
+                Rect::new(inner.x, inner.y + index as u16, inner.width, 1),
+                MouseAction::FanPreset(index),
+            );
             let selected = index == app.fan_sel;
             let marker = if selected { "▶" } else { " " };
             lines.push(Line::from(vec![
@@ -1349,6 +1385,11 @@ fn draw_net_list(frame: &mut Frame, area: Rect, app: &App) {
     match app.net_view {
         NetView::Connections => {
             for (index, conn) in app.connections.iter().enumerate() {
+                record_mouse(
+                    app,
+                    Rect::new(rows[1].x, rows[1].y + index as u16, rows[1].width, 1),
+                    MouseAction::Net(index),
+                );
                 let selected = index == app.net_sel;
                 let marker = if selected { "▶" } else { " " };
                 let active = if conn.active {
@@ -1375,6 +1416,11 @@ fn draw_net_list(frame: &mut Frame, area: Rect, app: &App) {
         }
         NetView::Wifi => {
             for (index, ap) in app.wifi.iter().enumerate() {
+                record_mouse(
+                    app,
+                    Rect::new(rows[1].x, rows[1].y + index as u16, rows[1].width, 1),
+                    MouseAction::Net(index),
+                );
                 let selected = index == app.net_sel;
                 let marker = if selected { "▶" } else { " " };
                 let bars = signal_bar(ap.signal);
@@ -1406,6 +1452,11 @@ fn draw_net_list(frame: &mut Frame, area: Rect, app: &App) {
         }
         NetView::Vpn => {
             for (index, vpn) in app.vpns.iter().enumerate() {
+                record_mouse(
+                    app,
+                    Rect::new(rows[1].x, rows[1].y + index as u16, rows[1].width, 1),
+                    MouseAction::Net(index),
+                );
                 let selected = index == app.net_sel;
                 let marker = if selected { "▶" } else { " " };
                 let active = if vpn.active {
@@ -1663,6 +1714,12 @@ fn draw_ip_form(frame: &mut Frame, area: Rect, form: &IpForm) {
     );
 }
 
+fn record_mouse(app: &App, rect: Rect, action: MouseAction) {
+    app.mouse_targets
+        .borrow_mut()
+        .push(MouseTarget { rect, action });
+}
+
 fn detail(label: &'static str, value: String) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("  {label:<6}"), Style::new().fg(DIM)),
@@ -1718,6 +1775,11 @@ fn draw_services(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut lines = Vec::new();
     for (index, info) in app.services.iter().enumerate() {
+        record_mouse(
+            app,
+            Rect::new(inner.x, inner.y + index as u16, inner.width, 1),
+            MouseAction::Service(index),
+        );
         let selected = index == app.service_sel;
         let marker = if selected { "▶" } else { " " };
         let active_color = match info.active.as_str() {

@@ -19,13 +19,7 @@ ASUS TUF 的终端控制台。Rust + [ratatui](https://ratatui.rs/)，底层调�
 ## 快速开始
 
 ```bash
-# AUR（发布后）
-paru -S rsztui
-
-# 或从本地 PKGBUILD 构建安装
 cd RszTui/packaging/aur && paru -Bi
-
-# 运行
 sudo rsztui
 ```
 
@@ -33,14 +27,13 @@ sudo rsztui
 
 | 文档 | 内容 |
 |---|---|
-| [安装](docs/INSTALL.md) | AUR、本地 PKGBUILD、GitHub Release、手动构建、更新/卸载 |
-| [命令与快捷键](docs/COMMANDS.md) | 所有 CLI 子命令、TUI 快捷键、开发命令 |
-| [AUR 发布](docs/AUR.md) | AUR 账号/SSH key、首次发布、版本更新 |
+| [安装](docs/INSTALL.md) | 本地 PKGBUILD、GitHub Release、手动构建、更新/卸载 |
+| [命令与快捷键](docs/COMMANDS.md) | 所有 CLI 子命令、TUI 快捷键、鼠标操作、开发命令 |
 | [配置与依赖](docs/CONFIG.md) | 配置文件、持久化、依赖检测、安全说明、已知限制 |
 
 ## 当前版本
 
-`0.5.0` · Arch / CachyOS · 需要 `asusctl`、`NetworkManager`，必须 `sudo` 运行（`doctor` 除外）。
+`0.6.0` · Arch / CachyOS · 需要 `asusctl`、`NetworkManager`，必须 `sudo` 运行（`doctor` 除外）。
 
 ## 许可
 
