@@ -1,6 +1,6 @@
 [package]
 name = "rsztui"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 description = "ASUS TUF 终端控制台：性能模式、电池、功耗、风扇、灯光与网络"
 license = "MIT"

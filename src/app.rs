@@ -80,6 +80,7 @@ impl Tab {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PerfFocus {
     Profiles,
+    Presets,
     Power,
 }
 
@@ -249,6 +250,7 @@ pub enum MouseAction {
     PerfBat,
     PerfPowerApply,
     PerfPresetApply,
+    PerfPanel(PerfFocus),
     ModalConfirm,
     ModalCancel,
 }
@@ -589,7 +591,16 @@ impl App {
 
         match key.code {
             KeyCode::Char('q') => {
-                self.confirm("退出", "退出 rsztui？", Pending::Quit);
+                let dirty = self.unsaved_changes();
+                let body = if dirty.is_empty() {
+                    "退出 rsztui？".to_string()
+                } else {
+                    format!(
+                        "以下更改尚未应用：\n  • {}\n\n退出将丢弃这些更改，确定退出？",
+                        dirty.join("\n  • ")
+                    )
+                };
+                self.confirm("退出", body, Pending::Quit);
             }
             KeyCode::Char('r') => {
                 self.deps = deps::check();
@@ -723,6 +734,7 @@ impl App {
                 }
             }
             MouseAction::PerfPreset(index) => {
+                self.perf_focus = PerfFocus::Presets;
                 self.preset_sel = index.min(self.cfg.power_presets.len().saturating_sub(1));
                 if double && let Some(preset) = self.cfg.preset(self.preset_sel) {
                     self.confirm(
@@ -844,6 +856,9 @@ impl App {
                 self.perf_focus = PerfFocus::Power;
                 self.handle_tab_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE))?;
             }
+            MouseAction::PerfPanel(focus) => {
+                self.perf_focus = focus;
+            }
             MouseAction::ModalConfirm | MouseAction::ModalCancel => {}
         }
         Ok(())
@@ -928,6 +943,23 @@ impl App {
         Ok(())
     }
 
+    fn unsaved_changes(&self) -> Vec<&'static str> {
+        let mut dirty = Vec::new();
+        if self.limit_dirty {
+            dirty.push("电池充电上限");
+        }
+        if self.power_dirty {
+            dirty.push("功耗 / TGP");
+        }
+        if self.fan_edit.as_ref().is_some_and(|edit| edit.dirty) {
+            dirty.push("风扇曲线");
+        }
+        if self.ip_form.is_some() {
+            dirty.push("IPv4 编辑");
+        }
+        dirty
+    }
+
     fn switch_tab(&mut self, tab: Tab) {
         self.tab = tab;
         self.cfg.ui.last_tab = tab.index();
@@ -955,7 +987,8 @@ impl App {
         match key.code {
             KeyCode::Char('f') => {
                 self.perf_focus = match self.perf_focus {
-                    PerfFocus::Profiles => PerfFocus::Power,
+                    PerfFocus::Profiles => PerfFocus::Presets,
+                    PerfFocus::Presets => PerfFocus::Power,
                     PerfFocus::Power => PerfFocus::Profiles,
                 };
             }
@@ -1007,6 +1040,36 @@ impl App {
                             "设置电池默认模式",
                             format!("电池供电时默认使用{}模式？", profile.zh()),
                             Pending::DefaultBattery(profile),
+                        );
+                    }
+                    _ => {}
+                },
+                PerfFocus::Presets => match key.code {
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if !self.cfg.power_presets.is_empty() {
+                            self.preset_sel = (self.preset_sel + 1) % self.cfg.power_presets.len();
+                        }
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if !self.cfg.power_presets.is_empty() {
+                            self.preset_sel = (self.preset_sel + self.cfg.power_presets.len() - 1)
+                                % self.cfg.power_presets.len();
+                        }
+                    }
+                    KeyCode::Home => self.preset_sel = 0,
+                    KeyCode::End => {
+                        self.preset_sel = self.cfg.power_presets.len().saturating_sub(1)
+                    }
+                    KeyCode::Enter | KeyCode::Char('p') if !self.cfg.power_presets.is_empty() => {
+                        let preset = self.cfg.power_presets[self.preset_sel].clone();
+                        self.confirm(
+                            "套用功耗预设",
+                            format!(
+                                "套用「{}」预设到 {} 模式？",
+                                preset.name,
+                                preset.profile.zh()
+                            ),
+                            Pending::Preset(self.preset_sel),
                         );
                     }
                     _ => {}

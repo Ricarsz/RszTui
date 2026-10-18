@@ -3,7 +3,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Clear, Gauge, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AURA_COLORS, App, IpForm, Modal, MouseAction, MouseTarget, NetView, Tab};
@@ -295,11 +295,22 @@ fn draw_graph_inner(
     let last = (data.len().saturating_sub(1)).max(1) as f64;
     let grid = Color::Rgb(46, 54, 66);
     let fill = Color::Rgb(26, 42, 50);
-    let points: Vec<(f64, f64)> = data
+    let values: Vec<f64> = data
+        .iter()
+        .map(|value| (*value).min(max as u64) as f64)
+        .collect();
+    let points: Vec<(f64, f64)> = values
         .iter()
         .enumerate()
-        .map(|(i, value)| (i as f64, (*value).min(max as u64) as f64))
+        .map(|(i, value)| (i as f64, *value))
         .collect();
+    let value_at = |x: f64| -> f64 {
+        let index = x.floor().max(0.0) as usize;
+        let frac = (x - index as f64).clamp(0.0, 1.0);
+        let a = values.get(index).copied().unwrap_or(0.0);
+        let b = values.get(index + 1).copied().unwrap_or(a);
+        a + (b - a) * frac
+    };
 
     let canvas = Canvas::default()
         .x_bounds([0.0, last])
@@ -314,12 +325,15 @@ fn draw_graph_inner(
                     color: grid,
                 });
             }
-            for (x, y) in &points {
+            let steps = (last * 4.0) as usize;
+            for i in 0..=steps {
+                let x = i as f64 / 4.0;
+                let y = value_at(x);
                 ctx.draw(&CanvasLine {
-                    x1: *x,
+                    x1: x,
                     y1: 0.0,
-                    x2: *x,
-                    y2: *y,
+                    x2: x,
+                    y2: y,
                     color: fill,
                 });
             }
@@ -844,6 +858,11 @@ fn draw_perf_summary(frame: &mut Frame, area: Rect, app: &App) {
 
 fn draw_profiles(frame: &mut Frame, area: Rect, app: &App) {
     let focused = app.perf_focus == crate::app::PerfFocus::Profiles;
+    record_mouse(
+        app,
+        area,
+        MouseAction::PerfPanel(crate::app::PerfFocus::Profiles),
+    );
     let block = panel_focused(" 性能模式 ", focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -956,7 +975,15 @@ fn draw_gpu_picker(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_presets(frame: &mut Frame, area: Rect, app: &App) {
-    let block = panel(" 功耗预设 ");
+    record_mouse(
+        app,
+        area,
+        MouseAction::PerfPanel(crate::app::PerfFocus::Presets),
+    );
+    let block = panel_focused(
+        " 功耗预设 ",
+        app.perf_focus == crate::app::PerfFocus::Presets,
+    );
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1003,6 +1030,11 @@ fn draw_presets(frame: &mut Frame, area: Rect, app: &App) {
 
 fn draw_power_fields(frame: &mut Frame, area: Rect, app: &App) {
     let focused = app.perf_focus == crate::app::PerfFocus::Power;
+    record_mouse(
+        app,
+        area,
+        MouseAction::PerfPanel(crate::app::PerfFocus::Power),
+    );
     let block = panel_focused(" 功耗与 TGP ", focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1064,15 +1096,131 @@ fn draw_power_fields(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_battery(frame: &mut Frame, area: Rect, app: &App) {
-    let block = panel(" 电池 ");
+    let rows = Layout::vertical([Constraint::Length(9), Constraint::Length(7)]).split(area);
+    draw_battery_status(frame, rows[0], app);
+    draw_battery_limit(frame, rows[1], app);
+}
+
+fn draw_battery_status(frame: &mut Frame, area: Rect, app: &App) {
+    let block = panel(" 电池状态 ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
-
     let rows = Layout::vertical([
-        Constraint::Length(3),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+
+    let capacity = app.battery.capacity.unwrap_or(0);
+    let width = inner.width.saturating_sub(8) as usize;
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                bar_text(capacity as f64 / 100.0, width),
+                Style::new().fg(battery_color(app)),
+            ),
+            Span::styled(
+                format!("  {capacity}%"),
+                Style::new().fg(battery_color(app)).bold(),
+            ),
+        ])),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  状态  ", Style::new().fg(DIM)),
+            Span::styled(
+                app.battery.status_zh(),
+                Style::new().fg(if app.battery.ac_online == Some(true) {
+                    GOOD
+                } else {
+                    WARN
+                }),
+            ),
+            Span::styled(
+                match app.battery.ac_online {
+                    Some(true) => "   已接电源",
+                    Some(false) => "   电池供电",
+                    None => "",
+                },
+                Style::new().fg(DIM),
+            ),
+        ])),
+        rows[1],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  功率  ", Style::new().fg(DIM)),
+            Span::styled(
+                app.battery
+                    .power_w
+                    .map(|v| format!("{v:.1} W"))
+                    .unwrap_or_else(|| "-".into()),
+                Style::new().fg(Color::Gray),
+            ),
+            Span::styled("   电压  ", Style::new().fg(DIM)),
+            Span::styled(
+                app.battery
+                    .voltage_v
+                    .map(|v| format!("{v:.2} V"))
+                    .unwrap_or_else(|| "-".into()),
+                Style::new().fg(Color::Gray),
+            ),
+        ])),
+        rows[2],
+    );
+    frame.render_widget(Line::from(Span::raw("")), rows[3]);
+
+    let health = app.battery.health_pct().unwrap_or(0.0);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  健康度  ", Style::new().fg(DIM)),
+            Span::styled(
+                bar_text(health as f64 / 100.0, 20),
+                Style::new().fg(if health >= 80.0 { GOOD } else { WARN }),
+            ),
+            Span::styled(format!("  {health:.1}%"), Style::new().fg(Color::Gray)),
+        ])),
+        rows[4],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  容量  ", Style::new().fg(DIM)),
+            Span::styled(
+                if let (Some(full), Some(design)) = (
+                    app.battery.energy_full_wh,
+                    app.battery.energy_full_design_wh,
+                ) {
+                    format!("{full:.1} / {design:.1} Wh")
+                } else {
+                    "-".into()
+                },
+                Style::new().fg(Color::Gray),
+            ),
+            Span::styled(
+                format!(
+                    "   循环 {} 次",
+                    app.battery
+                        .cycle_count
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "-".into())
+                ),
+                Style::new().fg(DIM),
+            ),
+        ])),
+        rows[5],
+    );
+}
+
+fn draw_battery_limit(frame: &mut Frame, area: Rect, app: &App) {
+    let block = panel(" 充电上限 ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -1080,123 +1228,58 @@ fn draw_battery(frame: &mut Frame, area: Rect, app: &App) {
     ])
     .split(inner);
 
-    let capacity = app.battery.capacity.unwrap_or(0);
     frame.render_widget(
-        Gauge::default()
-            .gauge_style(Style::new().fg(battery_color(app)))
-            .ratio(capacity as f64 / 100.0)
-            .label(format!(
-                "{}%  {}  {}",
-                capacity,
-                app.battery.status_zh(),
-                match app.battery.ac_online {
-                    Some(true) => "AC",
-                    Some(false) => "电池",
-                    None => "",
-                }
-            )),
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                bar_text(
+                    app.limit_edit as f64 / 100.0,
+                    inner.width.saturating_sub(10) as usize,
+                ),
+                Style::new().fg(if app.limit_dirty { WARN } else { GOOD }),
+            ),
+            Span::styled(
+                format!("  {}%", app.limit_edit),
+                Style::new()
+                    .fg(if app.limit_dirty { WARN } else { GOOD })
+                    .bold(),
+            ),
+        ])),
         rows[0],
     );
-
-    let info = |label: &'static str, value: String, color: Color| {
-        Line::from(vec![
-            Span::styled(format!("  {label:<8}"), Style::new().fg(DIM)),
-            Span::styled(value, Style::new().fg(color)),
-        ])
-    };
-
     frame.render_widget(
-        Paragraph::new(info(
-            "上限",
-            app.battery
-                .limit
-                .map(|v| format!("{v}%"))
-                .unwrap_or_else(|| "未知".into()),
-            Color::Gray,
-        )),
+        Paragraph::new(Line::from(vec![
+            Span::styled("  当前上限  ", Style::new().fg(DIM)),
+            Span::styled(
+                app.battery
+                    .limit
+                    .map(|v| format!("{v}%"))
+                    .unwrap_or_else(|| "-".into()),
+                Style::new().fg(Color::Gray),
+            ),
+            Span::styled(
+                if app.limit_dirty {
+                    "   编辑值未应用（Enter 应用）"
+                } else {
+                    "   h/l 调整   Enter 应用"
+                },
+                Style::new().fg(DIM),
+            ),
+        ])),
         rows[1],
     );
     frame.render_widget(
-        Paragraph::new(info(
-            "功率",
-            app.battery
-                .power_w
-                .map(|v| format!("{v:.1} W"))
-                .unwrap_or_else(|| "-".into()),
-            Color::Gray,
-        )),
+        Paragraph::new(Line::from(Span::styled(
+            "  o 单次充满（忽略上限）   长期插电建议 60-80%",
+            Style::new().fg(DIM),
+        ))),
         rows[2],
     );
-    frame.render_widget(
-        Paragraph::new(info(
-            "健康度",
-            app.battery
-                .health_pct()
-                .map(|v| format!("{v:.1}%"))
-                .unwrap_or_else(|| "-".into()),
-            Color::Gray,
-        )),
-        rows[3],
-    );
-    frame.render_widget(
-        Paragraph::new(info(
-            "循环",
-            app.battery
-                .cycle_count
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "-".into()),
-            Color::Gray,
-        )),
-        rows[4],
-    );
-    if let (Some(full), Some(design)) = (
-        app.battery.energy_full_wh,
-        app.battery.energy_full_design_wh,
-    ) {
-        frame.render_widget(
-            Paragraph::new(info(
-                "容量",
-                format!("{full:.1} / {design:.1} Wh"),
-                Color::Gray,
-            )),
-            rows[5],
-        );
-    }
-
-    let limit_line = Line::from(vec![
-        Span::styled("  充电上限  ", Style::new().fg(DIM)),
-        Span::styled(
-            format!("{}%", app.limit_edit),
-            Style::new()
-                .fg(if app.limit_dirty { WARN } else { GOOD })
-                .bold(),
-        ),
-        Span::styled(
-            if app.limit_dirty {
-                "  未应用（h/l 调整，Enter 应用）"
-            } else {
-                "  h/l 调整，Enter 应用"
-            },
-            Style::new().fg(DIM),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(limit_line), rows[6]);
-
-    let mut hints = vec![
-        Line::raw(""),
-        Line::from(Span::styled(
-            " o 单次充满（忽略上限）",
-            Style::new().fg(DIM),
-        )),
-        Line::from(Span::styled(
-            " 上限越低越省电池，长期插电建议 60-80%",
-            Style::new().fg(DIM),
-        )),
-    ];
+    let y = rows[3].y;
+    let mut hints = Vec::new();
     if let Some(line) = action_bar(
         app,
-        rows[7],
-        rows[7].y + 3,
+        rows[3],
+        y,
         &[
             (
                 "-5",
@@ -1215,7 +1298,17 @@ fn draw_battery(frame: &mut Frame, area: Rect, app: &App) {
     ) {
         hints.push(line);
     }
-    frame.render_widget(Paragraph::new(Text::from(hints)), rows[7]);
+    frame.render_widget(Paragraph::new(Text::from(hints)), rows[3]);
+}
+
+fn bar_text(ratio: f64, width: usize) -> String {
+    let width = width.max(1);
+    let filled = ((ratio.clamp(0.0, 1.0)) * width as f64).round() as usize;
+    format!(
+        "{}{}",
+        "█".repeat(filled.min(width)),
+        "░".repeat(width.saturating_sub(filled))
+    )
 }
 
 fn draw_fan(frame: &mut Frame, area: Rect, app: &App) {
@@ -1515,6 +1608,34 @@ fn draw_fan_presets(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
+fn hex_rgb(hex: &str) -> (u8, u8, u8) {
+    let value = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0xffffff);
+    (
+        ((value >> 16) & 0xff) as u8,
+        ((value >> 8) & 0xff) as u8,
+        (value & 0xff) as u8,
+    )
+}
+
+fn gradient_line(width: usize, from: &str, to: &str) -> Line<'static> {
+    let (ar, ag, ab) = hex_rgb(from);
+    let (br, bg, bb) = hex_rgb(to);
+    let width = width.max(1);
+    let mut spans = Vec::new();
+    for i in 0..width {
+        let t = if width <= 1 {
+            0.0
+        } else {
+            i as f64 / (width - 1) as f64
+        };
+        let r = (ar as f64 + (br as f64 - ar as f64) * t) as u8;
+        let g = (ag as f64 + (bg as f64 - ag as f64) * t) as u8;
+        let b = (ab as f64 + (bb as f64 - ab as f64) * t) as u8;
+        spans.push(Span::styled("█", Style::new().fg(Color::Rgb(r, g, b))));
+    }
+    Line::from(spans)
+}
+
 fn draw_lighting(frame: &mut Frame, area: Rect, app: &App) {
     let rows = Layout::vertical([Constraint::Length(11), Constraint::Min(0)]).split(area);
     let cols =
@@ -1584,6 +1705,19 @@ fn draw_lighting_status(frame: &mut Frame, area: Rect, app: &App) {
         )));
     }
 
+    if let Some(aura) = &app.aura {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled("  颜色预览", Style::new().fg(DIM))));
+        lines.push(gradient_line(
+            inner.width.saturating_sub(2) as usize,
+            &aura.color1,
+            if aura.color2 == "#000000" {
+                "#1e242d"
+            } else {
+                &aura.color2
+            },
+        ));
+    }
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         "  b 亮度   e/E 灯效   c 选色   S 应用静态色",
@@ -1715,35 +1849,35 @@ fn draw_lighting_modes(frame: &mut Frame, area: Rect, app: &App) {
     let current = app.aura.as_ref().map(|aura| aura.mode);
 
     let mut lines = Vec::new();
-    for mode in supported {
-        let active = current == Some(mode);
-        lines.push(Line::from(vec![
-            Span::styled(
+    for chunk in supported.chunks(3) {
+        let mut spans = Vec::new();
+        for mode in chunk {
+            let active = current == Some(*mode);
+            spans.push(Span::styled(
                 format!(" {} ", if active { "▶" } else { " " }),
                 Style::new().fg(if active { ACCENT } else { DIM }),
-            ),
-            Span::styled(
-                format!("{:<14}", asus::aura_mode_name(mode)),
+            ));
+            spans.push(Span::styled(
+                format!("{:<13}", asus::aura_mode_name(*mode)),
                 if active {
                     Style::new().fg(ACCENT).bold()
                 } else {
                     Style::new().fg(Color::Gray)
                 },
-            ),
-            Span::styled(
-                asus::aura_mode_zh(mode),
+            ));
+            spans.push(Span::styled(
+                format!("{:<7}", asus::aura_mode_zh(*mode)),
                 if active {
                     Style::new().fg(ACCENT)
                 } else {
                     Style::new().fg(DIM)
                 },
-            ),
+            ));
             if active {
-                Span::styled("   [当前]", Style::new().fg(GOOD))
-            } else {
-                Span::raw("")
-            },
-        ]));
+                spans.push(Span::styled("[当前] ", Style::new().fg(GOOD)));
+            }
+        }
+        lines.push(Line::from(spans));
     }
 
     lines.push(Line::raw(""));
@@ -2711,7 +2845,11 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
 
     let hint = match app.tab {
         Tab::Dashboard => " Tab 切换  r 刷新  ? 帮助  q 退出",
-        Tab::Performance => " f 焦点  j/k 选择  Enter 应用  a/b 设默认  g/G GPU  ? 帮助",
+        Tab::Performance => match app.perf_focus {
+            crate::app::PerfFocus::Profiles => " j/k 选择  Enter 切换  a/b 默认  f 焦点  g/G GPU",
+            crate::app::PerfFocus::Presets => " j/k 预设  Enter/p 套用  f 焦点",
+            crate::app::PerfFocus::Power => " j/k 字段  h/l 调整  Enter 应用  f 焦点",
+        },
         Tab::Battery => " h/l 上限  Enter 应用  o 单次充满  ? 帮助",
         Tab::Fan => " i/I 编辑曲线  j/k 预设  p 应用  s 保存  e 启用  ? 帮助",
         Tab::Lighting => " b 亮度  e/E 灯效  c 颜色  S 静态色  ? 帮助",
