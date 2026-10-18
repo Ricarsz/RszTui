@@ -102,7 +102,18 @@ pub fn human_bytes(value: f64) -> String {
 }
 
 pub fn human_rate(bytes_per_sec: f64) -> String {
-    format!("{}/s", human_bytes(bytes_per_sec))
+    const UNITS: [&str; 5] = ["B/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s"];
+    let mut value = bytes_per_sec.max(0.0);
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{value:.0} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 /// 按字符宽度截断（中文按 2 列算）。
@@ -146,6 +157,13 @@ pub fn split_nmcli(line: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn formats_rates_with_binary_units() {
+        assert_eq!(human_rate(0.0), "0 B/s");
+        assert_eq!(human_rate(1536.0), "1.5 KiB/s");
+        assert_eq!(human_rate(1024.0 * 1024.0), "1.0 MiB/s");
+    }
 
     #[test]
     fn splits_nmcli_escaped_separators() {

@@ -32,7 +32,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     draw_header(frame, chunks[0], app);
 
-    let body = Layout::horizontal([Constraint::Length(23), Constraint::Min(0)]).split(chunks[1]);
+    let sidebar_width = if area.width < 110 { 19 } else { 23 };
+    let body = Layout::horizontal([Constraint::Length(sidebar_width), Constraint::Min(0)])
+        .split(chunks[1]);
     draw_sidebar(frame, body[0], app);
     draw_body(frame, body[1], app);
     let main_area = body[1];
@@ -337,7 +339,7 @@ fn draw_graph_inner(
                     color: grid,
                 });
             }
-            let steps = (last * 10.0) as usize;
+            let steps = (last * 4.0).ceil() as usize;
             for i in 0..=steps {
                 let x = i as f64 / 4.0;
                 let y = value_at(x);
@@ -405,8 +407,11 @@ fn draw_cpu(frame: &mut Frame, area: Rect, app: &App) {
     let block = panel(" CPU ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let per_row = (inner.width as usize / 9).clamp(1, 8);
-    let core_rows = app.snap.cpu_cores.len().div_ceil(per_row).clamp(1, 4) as u16;
+    let compact = inner.width < 48;
+    let cell_width = if compact { 7 } else { 9 };
+    let per_row = (inner.width as usize / cell_width).clamp(2, 8);
+    let wanted_rows = app.snap.cpu_cores.len().div_ceil(per_row).clamp(1, 6);
+    let core_rows = wanted_rows.min(inner.height.saturating_sub(3).max(1) as usize) as u16;
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(2),
@@ -421,31 +426,41 @@ fn draw_cpu(frame: &mut Frame, area: Rect, app: &App) {
         .find(|(label, _)| label.to_ascii_lowercase().contains("tctl"))
         .map(|(_, value)| *value)
         .or(app.snap.max_temp);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!(" {:.1}%", app.snap.cpu_pct),
-                Style::new().fg(GOOD).bold(),
+    let graph_max = app.cpu_hist.iter().copied().max().unwrap_or(0).max(10);
+    let mut summary = vec![
+        Span::styled(
+            format!(" {:.1}%", app.snap.cpu_pct),
+            Style::new().fg(GOOD).bold(),
+        ),
+        Span::styled(
+            format!("  负载 {:.2}", app.snap.load1),
+            Style::new().fg(DIM),
+        ),
+        Span::styled(
+            format!(
+                "  Tctl {}",
+                cpu_temp
+                    .map(|v| format!("{v:.1}°C"))
+                    .unwrap_or_else(|| "-".into())
             ),
-            Span::styled(
-                format!("  负载 {:.2}", app.snap.load1),
-                Style::new().fg(DIM),
-            ),
-            Span::styled(
-                format!(
-                    "  Tctl {}",
-                    cpu_temp
-                        .map(|v| format!("{v:.1}°C"))
-                        .unwrap_or_else(|| "-".into())
-                ),
-                Style::new().fg(DIM),
-            ),
-        ])),
-        rows[0],
-    );
+            Style::new().fg(DIM),
+        ),
+    ];
+    if inner.width >= 50 {
+        summary.push(Span::styled(
+            format!("  量程 {graph_max}%"),
+            Style::new().fg(DIM),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(summary)), rows[0]);
 
-    let max = app.cpu_hist.iter().copied().max().unwrap_or(0).max(10);
-    draw_graph_inner(frame, rows[1], &app.cpu_hist, max, Color::Rgb(90, 200, 220));
+    draw_graph_inner(
+        frame,
+        rows[1],
+        &app.cpu_hist,
+        graph_max,
+        Color::Rgb(90, 200, 220),
+    );
 
     if app.snap.cpu_cores.is_empty() {
         frame.render_widget(
@@ -461,12 +476,14 @@ fn draw_cpu(frame: &mut Frame, area: Rect, app: &App) {
             let mut spans = Vec::new();
             for (offset, value) in chunk.iter().enumerate() {
                 let index = lines.len() * per_row + offset;
-                let bar = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
-                    [((*value / 100.0 * 7.0).round() as usize).min(7)];
-                spans.push(Span::styled(
-                    format!("C{index:02}{bar}{value:>3.0}% "),
-                    Style::new().fg(load_color(*value)),
-                ));
+                let label = if compact {
+                    format!("C{index:02}{value:>3.0}% ")
+                } else {
+                    let bar = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+                        [((*value / 100.0 * 7.0).round() as usize).min(7)];
+                    format!("C{index:02}{bar}{value:>3.0}% ")
+                };
+                spans.push(Span::styled(label, Style::new().fg(load_color(*value))));
             }
             lines.push(Line::from(spans));
         }
@@ -513,27 +530,25 @@ fn draw_memory(frame: &mut Frame, area: Rect, app: &App) {
         ])),
         rows[0],
     );
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!(
-                    " 已用 {} / {}",
-                    util::human_bytes(used as f64),
-                    util::human_bytes(total as f64)
-                ),
-                Style::new().fg(Color::Gray),
-            ),
-            Span::styled(
-                format!("   缓存 {}", util::human_bytes(cached as f64)),
-                Style::new().fg(DIM),
-            ),
-            Span::styled(
-                format!("   空闲 {}", util::human_bytes(free as f64)),
-                Style::new().fg(DIM),
-            ),
-        ])),
-        rows[1],
-    );
+    let mut legend = vec![Span::styled(
+        format!(
+            " 已用 {} / {}",
+            util::human_bytes(used as f64),
+            util::human_bytes(total as f64)
+        ),
+        Style::new().fg(Color::Gray),
+    )];
+    if inner.width >= 55 {
+        legend.push(Span::styled(
+            format!("   缓存 {}", util::human_bytes(cached as f64)),
+            Style::new().fg(DIM),
+        ));
+        legend.push(Span::styled(
+            format!("   空闲 {}", util::human_bytes(free as f64)),
+            Style::new().fg(DIM),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(legend)), rows[1]);
     draw_graph_inner(
         frame,
         rows[2],
@@ -550,39 +565,45 @@ fn draw_network_graph(frame: &mut Frame, area: Rect, app: &App) {
 
     let parts = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Min(2),
+        Constraint::Min(1),
         Constraint::Length(1),
-        Constraint::Min(2),
+        Constraint::Min(1),
     ])
     .split(inner);
 
-    let header = Line::from(vec![
-        Span::styled(" ↓ ", Style::new().fg(ACCENT)),
-        Span::styled(
-            util::human_rate(app.snap.rx_bps),
-            Style::new().fg(Color::Gray),
-        ),
-        Span::raw("   "),
-        Span::styled(" ↑ ", Style::new().fg(WARN)),
-        Span::styled(
-            util::human_rate(app.snap.tx_bps),
-            Style::new().fg(Color::Gray),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(header), parts[0]);
-
-    let rx_max = app.rx_hist.iter().copied().max().unwrap_or(0).max(1);
-    draw_graph_inner(frame, parts[1], &app.rx_hist, rx_max, ACCENT);
+    let rx_peak = app.rx_hist.iter().copied().max().unwrap_or(0).max(1);
+    let tx_peak = app.tx_hist.iter().copied().max().unwrap_or(0).max(1);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" ↓ ", Style::new().fg(ACCENT)),
+            Span::styled(
+                util::human_rate(app.snap.rx_bps),
+                Style::new().fg(Color::Gray),
+            ),
+            Span::styled(
+                format!("   峰值 {}", util::human_rate(rx_peak as f64)),
+                Style::new().fg(DIM),
+            ),
+        ])),
+        parts[0],
+    );
+    draw_graph_inner(frame, parts[1], &app.rx_hist, rx_peak, ACCENT);
 
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            " 上传",
-            Style::new().fg(WARN).bold(),
-        ))),
+        Paragraph::new(Line::from(vec![
+            Span::styled(" ↑ ", Style::new().fg(WARN)),
+            Span::styled(
+                util::human_rate(app.snap.tx_bps),
+                Style::new().fg(Color::Gray),
+            ),
+            Span::styled(
+                format!("   峰值 {}", util::human_rate(tx_peak as f64)),
+                Style::new().fg(DIM),
+            ),
+        ])),
         parts[2],
     );
-    let tx_max = app.tx_hist.iter().copied().max().unwrap_or(0).max(1);
-    draw_graph_inner(frame, parts[3], &app.tx_hist, tx_max, WARN);
+    draw_graph_inner(frame, parts[3], &app.tx_hist, tx_peak, WARN);
 }
 
 fn draw_temps(frame: &mut Frame, area: Rect, app: &App) {

@@ -529,6 +529,9 @@ impl App {
                         }
                         dirty = true;
                     }
+                    Event::Resize(_, _) => {
+                        dirty = true;
+                    }
                     Event::Mouse(mouse) => {
                         let moved = matches!(mouse.kind, MouseEventKind::Moved);
                         let hover_before = self.hover;
@@ -2198,8 +2201,8 @@ impl App {
             0
         };
         push_hist(&mut self.mem_hist, mem_pct);
-        push_hist(&mut self.rx_hist, (snap.rx_bps / 1024.0) as u64);
-        push_hist(&mut self.tx_hist, (snap.tx_bps / 1024.0) as u64);
+        push_hist(&mut self.rx_hist, snap.rx_bps as u64);
+        push_hist(&mut self.tx_hist, snap.tx_bps as u64);
         self.snap = snap;
     }
 
