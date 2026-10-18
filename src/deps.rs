@@ -6,6 +6,8 @@ use std::process::Command;
 
 use serde::Serialize;
 
+use crate::services;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Check {
     pub name: &'static str,
@@ -180,21 +182,26 @@ pub fn check() -> Report {
     });
 
     let systemd = which("systemctl").is_some();
-    let asusd_active = service_active("asusd");
-    let asusd_enabled = service_enabled("asusd");
+    let asusd = services::query("asusd.service");
     checks.push(Check {
         name: "asusd",
-        ok: asusd_active == Some(true),
+        ok: asusd.is_active(),
         required: asus_required,
-        detail: match (systemd, asusd_active, asusd_enabled) {
-            (false, _, _) => "无法检测：systemctl 不存在".into(),
-            (true, Some(true), Some(true)) => "运行中，已设置开机启动".into(),
-            (true, Some(true), _) => "运行中，但未设置开机启动".into(),
-            (true, Some(false), Some(true)) => "未运行（已设置开机启动）".into(),
-            (true, Some(false), _) => "未运行".into(),
-            (true, None, _) => "无法检测".into(),
+        detail: match (
+            systemd,
+            asusd.load.as_str(),
+            asusd.active.as_str(),
+            asusd.enabled.as_str(),
+        ) {
+            (false, _, _, _) => "无法检测：systemctl 不存在".into(),
+            (_, "not-found", _, _) => "未找到 asusd.service".into(),
+            (_, _, "active", "enabled") => "运行中，已设置开机启动".into(),
+            (_, _, "active", "static") => "运行中（static，随依赖启动）".into(),
+            (_, _, "active", _) => "运行中，但未设置开机启动".into(),
+            (_, _, _, "enabled") => "未运行（已设置开机启动）".into(),
+            (_, _, _, _) => "未运行".into(),
         },
-        hint: if asusd_active == Some(true) || !asus_required {
+        hint: if asusd.is_active() || !asus_required {
             None
         } else {
             Some("启动并设为开机自启：sudo systemctl enable --now asusd".into())
@@ -221,18 +228,22 @@ pub fn check() -> Report {
         },
     });
 
-    let nm_active = service_active("NetworkManager");
+    let network_manager = services::query("NetworkManager.service");
     checks.push(Check {
         name: "NetworkManager",
-        ok: nm_active == Some(true),
+        ok: network_manager.is_active(),
         required: true,
-        detail: match (systemd, nm_active) {
-            (false, _) => "无法检测：systemctl 不存在".into(),
-            (true, Some(true)) => "运行中".into(),
-            (true, Some(false)) => "未运行".into(),
-            (true, None) => "无法检测".into(),
+        detail: match (
+            systemd,
+            network_manager.load.as_str(),
+            network_manager.active.as_str(),
+        ) {
+            (false, _, _) => "无法检测：systemctl 不存在".into(),
+            (_, "not-found", _) => "未找到 NetworkManager.service".into(),
+            (_, _, "active") => "运行中".into(),
+            (_, _, _) => "未运行".into(),
         },
-        hint: if nm_active == Some(true) {
+        hint: if network_manager.is_active() {
             None
         } else {
             Some("启动并设为开机自启：sudo systemctl enable --now NetworkManager".into())
@@ -329,24 +340,6 @@ fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
         return None;
     }
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn service_active(name: &str) -> Option<bool> {
-    which("systemctl")?;
-    Command::new("systemctl")
-        .args(["is-active", "--quiet", name])
-        .status()
-        .ok()
-        .map(|status| status.success())
-}
-
-fn service_enabled(name: &str) -> Option<bool> {
-    which("systemctl")?;
-    Command::new("systemctl")
-        .args(["is-enabled", "--quiet", name])
-        .status()
-        .ok()
-        .map(|status| status.success())
 }
 
 fn distro() -> (String, String, String) {

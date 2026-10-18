@@ -6,6 +6,7 @@ use crate::asus::{self, GpuMode, PowerSource, Profile};
 use crate::config::{Config, FanPreset};
 use crate::deps;
 use crate::nm;
+use crate::services::{self, ServiceAction};
 
 #[derive(Parser)]
 #[command(
@@ -66,6 +67,37 @@ pub enum Cmd {
     Config,
     /// 检查 asusctl/asusd/NetworkManager 依赖
     Doctor,
+    /// 管理系统服务（asusd、NetworkManager 等）
+    Service {
+        #[command(subcommand)]
+        cmd: ServiceCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ServiceCmd {
+    /// 查看服务状态（不指定名字则列出默认服务）
+    Status { name: Option<String> },
+    /// 启动服务
+    Start { name: String },
+    /// 停止服务
+    Stop { name: String },
+    /// 重启服务
+    Restart { name: String },
+    /// 设置开机自启
+    Enable {
+        name: String,
+        /// 同时立即启动
+        #[arg(long)]
+        now: bool,
+    },
+    /// 取消开机自启
+    Disable {
+        name: String,
+        /// 同时立即停止
+        #[arg(long)]
+        now: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -325,7 +357,89 @@ pub fn run(cmd: Cmd, json: bool) -> Result<()> {
         Cmd::Aura { cmd } => aura(cmd, json),
         Cmd::Config => config(json),
         Cmd::Doctor => doctor(json),
+        Cmd::Service { cmd } => service(cmd, json),
     }
+}
+
+fn service(cmd: ServiceCmd, json: bool) -> Result<()> {
+    match cmd {
+        ServiceCmd::Status { name } => {
+            if let Some(name) = name {
+                let info = services::query(&name);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&info)?);
+                } else {
+                    print_service(&info);
+                }
+            } else {
+                let list = services::status_all();
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&list)?);
+                } else {
+                    for info in &list {
+                        print_service(info);
+                    }
+                }
+            }
+            Ok(())
+        }
+        ServiceCmd::Start { name } => service_action(&name, ServiceAction::Start, json),
+        ServiceCmd::Stop { name } => service_action(&name, ServiceAction::Stop, json),
+        ServiceCmd::Restart { name } => service_action(&name, ServiceAction::Restart, json),
+        ServiceCmd::Enable { name, now } => service_action(
+            &name,
+            if now {
+                ServiceAction::EnableNow
+            } else {
+                ServiceAction::Enable
+            },
+            json,
+        ),
+        ServiceCmd::Disable { name, now } => service_action(
+            &name,
+            if now {
+                ServiceAction::DisableNow
+            } else {
+                ServiceAction::Disable
+            },
+            json,
+        ),
+    }
+}
+
+fn service_action(name: &str, action: ServiceAction, json: bool) -> Result<()> {
+    let unit = services::normalize_unit(name)?;
+    services::apply(&unit, action)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "ok": true,
+                "unit": unit,
+                "action": action,
+            }))?
+        );
+    } else {
+        println!("{} {}", action.label(), unit);
+    }
+    Ok(())
+}
+
+fn print_service(info: &services::ServiceInfo) {
+    let marker = if info.active == "active" {
+        "●"
+    } else if info.active == "failed" || info.load == "not-found" {
+        "✗"
+    } else {
+        "○"
+    };
+    println!(
+        "{} {:<28} {:<10} {}",
+        marker,
+        info.display_name(),
+        info.active,
+        info.enabled
+    );
 }
 
 fn doctor(json: bool) -> Result<()> {

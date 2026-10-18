@@ -26,17 +26,19 @@ pub enum Tab {
     Fan,
     Lighting,
     Network,
+    Services,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 7] = [
+    pub const ALL: [Tab; 8] = [
         Tab::Dashboard,
         Tab::Performance,
         Tab::Battery,
         Tab::Fan,
         Tab::Lighting,
         Tab::Network,
+        Tab::Services,
         Tab::Settings,
     ];
 
@@ -48,6 +50,7 @@ impl Tab {
             Tab::Fan => "风扇",
             Tab::Lighting => "灯光",
             Tab::Network => "网络",
+            Tab::Services => "服务",
             Tab::Settings => "设置",
         }
     }
@@ -231,6 +234,10 @@ pub enum Pending {
     FanToggle(bool),
     FanCurveApply(FanEdit),
     FanEditClose,
+    Service {
+        unit: String,
+        action: crate::services::ServiceAction,
+    },
     HotspotOff,
     Quit,
 }
@@ -287,6 +294,8 @@ pub struct App {
     pub wifi_enabled: Option<bool>,
     pub ip_form: Option<IpForm>,
     pub net_ipv4: Option<nm::Ipv4Settings>,
+    pub services: Vec<crate::services::ServiceInfo>,
+    pub service_sel: usize,
     pub snap: Snapshot,
     pub cpu_hist: VecDeque<u64>,
     pub mem_hist: VecDeque<u64>,
@@ -355,6 +364,8 @@ impl App {
             wifi_enabled: None,
             ip_form: None,
             net_ipv4: None,
+            services: Vec::new(),
+            service_sel: 0,
             snap: Snapshot::default(),
             cpu_hist: VecDeque::with_capacity(HISTORY),
             mem_hist: VecDeque::with_capacity(HISTORY),
@@ -460,7 +471,7 @@ impl App {
             }
             KeyCode::Tab => self.switch_tab(Tab::next(self.tab)),
             KeyCode::BackTab => self.switch_tab(Tab::prev(self.tab)),
-            KeyCode::Char(c @ '1'..='7') => {
+            KeyCode::Char(c @ '1'..='8') => {
                 let index = c as usize - '1' as usize;
                 self.switch_tab(Tab::from_index(index));
             }
@@ -560,6 +571,7 @@ impl App {
             Tab::Fan => self.handle_fan_key(key)?,
             Tab::Lighting => self.handle_lighting_key(key)?,
             Tab::Network => self.handle_network_key(key)?,
+            Tab::Services => self.handle_service_key(key)?,
             _ => {}
         }
         Ok(())
@@ -885,6 +897,63 @@ impl App {
             );
         }
 
+        Ok(())
+    }
+
+    fn handle_service_key(&mut self, key: KeyEvent) -> Result<()> {
+        let Some(info) = self.services.get(self.service_sel).cloned() else {
+            return Ok(());
+        };
+
+        let action = match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                if !self.services.is_empty() {
+                    self.service_sel = (self.service_sel + 1) % self.services.len();
+                }
+                return Ok(());
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if !self.services.is_empty() {
+                    self.service_sel =
+                        (self.service_sel + self.services.len() - 1) % self.services.len();
+                }
+                return Ok(());
+            }
+            KeyCode::Char('s') => crate::services::ServiceAction::Start,
+            KeyCode::Char('t') => crate::services::ServiceAction::Stop,
+            KeyCode::Char('R') => crate::services::ServiceAction::Restart,
+            KeyCode::Char('e') => crate::services::ServiceAction::Enable,
+            KeyCode::Char('d') => crate::services::ServiceAction::Disable,
+            KeyCode::Char('E') => crate::services::ServiceAction::EnableNow,
+            KeyCode::Char('D') => crate::services::ServiceAction::DisableNow,
+            _ => return Ok(()),
+        };
+
+        let impact = match (info.unit.as_str(), action) {
+            ("NetworkManager.service", crate::services::ServiceAction::Stop)
+            | ("NetworkManager.service", crate::services::ServiceAction::Restart)
+            | ("NetworkManager.service", crate::services::ServiceAction::DisableNow) => {
+                "\n\n注意：会短暂或完全断开网络连接。"
+            }
+            ("asusd.service", crate::services::ServiceAction::Stop)
+            | ("asusd.service", crate::services::ServiceAction::DisableNow) => {
+                "\n\n注意：停止后性能模式、电池、风扇和灯光控制都会不可用。"
+            }
+            ("systemd-resolved.service", crate::services::ServiceAction::Stop)
+            | ("systemd-resolved.service", crate::services::ServiceAction::DisableNow) => {
+                "\n\n注意：DNS 解析可能失效，DoT 也会受影响。"
+            }
+            _ => "",
+        };
+
+        self.confirm(
+            "服务操作",
+            format!("{} {}？{impact}", action.label(), info.unit),
+            Pending::Service {
+                unit: info.unit,
+                action,
+            },
+        );
         Ok(())
     }
 
@@ -1423,6 +1492,11 @@ impl App {
                 self.fan_edit = None;
                 self.status = "已放弃风扇曲线修改".into();
             }
+            Pending::Service { unit, action } => {
+                crate::services::apply(&unit, action)?;
+                self.deps = deps::check();
+                self.status = format!("{} {}", action.label(), unit);
+            }
             Pending::FanToggle(enabled) => {
                 let profile = self.profile.map(|p| p.active).unwrap_or(Profile::Balanced);
                 asus::fan_set_enabled(profile, enabled)?;
@@ -1513,6 +1587,8 @@ impl App {
         }
         self.net_sel = self.net_sel.min(self.net_len().saturating_sub(1));
         self.refresh_net_detail();
+        self.services = crate::services::status_all();
+        self.service_sel = self.service_sel.min(self.services.len().saturating_sub(1));
         self.fan_sel = self
             .fan_sel
             .min(self.cfg.fan_presets.len().saturating_sub(1));
@@ -1597,7 +1673,7 @@ fn ip_form_summary(form: &IpForm) -> String {
 fn help_text() -> String {
     [
         "全局",
-        "  Tab / Shift+Tab  切换页面     1-7  直接跳转",
+        "  Tab / Shift+Tab  切换页面     1-8  直接跳转",
         "  r 刷新   ? 帮助   q 退出      Ctrl+C 立即退出",
         "",
         "性能",
@@ -1617,6 +1693,10 @@ fn help_text() -> String {
         "灯光",
         "  b 切换键盘亮度   e/E 下一个/上一个灯效",
         "  c 切换静态颜色   S 应用静态色",
+        "",
+        "服务",
+        "  j/k 选择   s 启动   t 停止   R 重启",
+        "  e 启用自启   d 禁用自启   E 启用并启动   D 禁用并停止",
         "",
         "网络",
         "  v 切换 连接/Wi-Fi/VPN   j/k 选择   Enter 连接或编辑",

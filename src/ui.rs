@@ -166,6 +166,7 @@ fn draw_body(frame: &mut Frame, area: Rect, app: &App) {
         Tab::Fan => draw_fan(frame, area, app),
         Tab::Lighting => draw_lighting(frame, area, app),
         Tab::Network => draw_network(frame, area, app),
+        Tab::Services => draw_services(frame, area, app),
         Tab::Settings => draw_settings(frame, area, app),
     }
 }
@@ -1535,6 +1536,136 @@ fn hex_color(hex: &str) -> Color {
     )
 }
 
+fn draw_services(frame: &mut Frame, area: Rect, app: &App) {
+    let cols =
+        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).split(area);
+
+    let block = panel(" 系统服务 ");
+    let inner = block.inner(cols[0]);
+    frame.render_widget(block, cols[0]);
+
+    let mut lines = Vec::new();
+    for (index, info) in app.services.iter().enumerate() {
+        let selected = index == app.service_sel;
+        let marker = if selected { "▶" } else { " " };
+        let active_color = match info.active.as_str() {
+            "active" => GOOD,
+            "failed" => BAD,
+            "activating" | "reloading" => WARN,
+            _ => DIM,
+        };
+        let enabled_color = match info.enabled.as_str() {
+            "enabled" => GOOD,
+            "static" => WARN,
+            "masked" => BAD,
+            _ => DIM,
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {marker} {:<24}", util::truncate(info.display_name(), 24)),
+                if selected {
+                    Style::new().fg(ACCENT).bold()
+                } else {
+                    Style::new().fg(Color::Gray)
+                },
+            ),
+            Span::styled(
+                format!("{:<10}", active_zh(&info.active)),
+                Style::new().fg(active_color),
+            ),
+            Span::styled(
+                format!("{:<12}", enabled_zh(&info.enabled)),
+                Style::new().fg(enabled_color),
+            ),
+        ]));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        " s 启动   t 停止   R 重启",
+        Style::new().fg(DIM),
+    )));
+    lines.push(Line::from(Span::styled(
+        " e 启用自启   d 禁用自启   E 启用并启动   D 禁用并停止",
+        Style::new().fg(DIM),
+    )));
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        inner,
+    );
+
+    let block = panel(" 服务详情 ");
+    let inner = block.inner(cols[1]);
+    frame.render_widget(block, cols[1]);
+
+    let mut details = Vec::new();
+    if let Some(info) = app.services.get(app.service_sel) {
+        details.push(detail("服务", info.unit.clone()));
+        details.push(detail("加载", info.load.clone()));
+        details.push(detail("状态", active_zh(&info.active).into()));
+        details.push(detail("自启", enabled_zh(&info.enabled).into()));
+        details.push(Line::raw(""));
+        details.push(Line::from(Span::styled(
+            " s 启动   t 停止   R 重启",
+            Style::new().fg(DIM),
+        )));
+        details.push(Line::from(Span::styled(
+            " e 启用自启   d 禁用自启",
+            Style::new().fg(DIM),
+        )));
+        details.push(Line::from(Span::styled(
+            " E 启用并立即启动   D 禁用并停止",
+            Style::new().fg(DIM),
+        )));
+        details.push(Line::raw(""));
+        details.push(Line::from(Span::styled(
+            " 停止或重启 NetworkManager 会断网；",
+            Style::new().fg(WARN),
+        )));
+        details.push(Line::from(Span::styled(
+            " 停止 asusd 会失去 ASUS 硬件控制。",
+            Style::new().fg(WARN),
+        )));
+        if info.load == "not-found" {
+            details.push(Line::raw(""));
+            details.push(Line::from(Span::styled(
+                " 该服务不存在",
+                Style::new().fg(BAD),
+            )));
+        }
+    } else {
+        details.push(Line::from(Span::styled(" 没有服务", Style::new().fg(DIM))));
+    }
+
+    frame.render_widget(
+        Paragraph::new(Text::from(details)).wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn active_zh(state: &str) -> &'static str {
+    match state {
+        "active" => "运行中",
+        "inactive" => "已停止",
+        "failed" => "失败",
+        "activating" => "启动中",
+        "deactivating" => "停止中",
+        "reloading" => "重载中",
+        _ => "未知",
+    }
+}
+
+fn enabled_zh(state: &str) -> &'static str {
+    match state {
+        "enabled" => "已启用",
+        "disabled" => "已禁用",
+        "static" => "static",
+        "masked" => "已屏蔽",
+        _ => "未知",
+    }
+}
+
 fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
     let block = panel(" 设置与关于 ");
     let inner = block.inner(area);
@@ -1641,7 +1772,8 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Tab::Fan => " i/I 编辑曲线  j/k 预设  p 应用  s 保存  e 启用  ? 帮助",
         Tab::Lighting => " b 亮度  e/E 灯效  c 颜色  S 静态色  ? 帮助",
         Tab::Network => " v 视图  j/k 选择  Enter 连接/编辑  u/d 启停  x 删除  o 无线  t 热点",
-        _ => " Tab 切换  1-7 跳转  r 刷新  ? 帮助  q 退出",
+        Tab::Services => " j/k 选择  s 启动  t 停止  R 重启  e/d 自启  E/D 立即  ? 帮助",
+        _ => " Tab 切换  1-8 跳转  r 刷新  ? 帮助  q 退出",
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(

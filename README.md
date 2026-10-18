@@ -14,6 +14,7 @@ ASUS TUF 的终端控制台。Rust + [ratatui](https://ratatui.rs/)，底层调�
 - **风扇**：查看/启用/停用曲线、恢复默认、保存/套用/删除预设（原始 PWM，无舍入误差）
 - **灯光**：键盘亮度、Aura 下一个/上一个灯效、静态颜色
 - **网络**：连接列表、Wi-Fi 扫描/连接/断开、DHCP/静态 IP、网关、DNS、DoT、VPN 启停、热点、无线开关、连接删除
+- **服务**：查看/启动/停止/重启 asusd、asus-shutdown、NetworkManager、systemd-resolved，启用/禁用开机自启
 - **CLI**：与 TUI 同能力，支持 `--json`
 
 ## 依赖
@@ -146,6 +147,21 @@ sudo rsztui aura prev
 sudo rsztui aura static ff8800
 ```
 
+### 服务管理
+
+```bash
+sudo rsztui service status                 # 默认四个服务
+sudo rsztui service status sshd            # 也可以查任意 unit
+sudo rsztui service restart asusd
+sudo rsztui service restart NetworkManager # 会短暂断网
+sudo rsztui service stop asusd             # 停止后 ASUS 控制不可用
+sudo rsztui service start asusd
+sudo rsztui service enable asus-shutdown --now
+sudo rsztui service disable asus-shutdown --now
+```
+
+服务名可以省略 `.service` 后缀。停止/重启 NetworkManager 会断网，停止 asusd 会失去性能/电池/风扇/灯光控制，TUI 里会二次确认并提示影响。
+
 ## 快捷键
 
 全局：
@@ -153,7 +169,7 @@ sudo rsztui aura static ff8800
 | 键 | 作用 |
 |---|---|
 | `Tab` / `Shift+Tab` | 切换页面 |
-| `1`–`7` | 直接跳页 |
+| `1`–`8` | 直接跳页 |
 | `r` | 刷新 |
 | `?` | 帮助 |
 | `q` | 退出（确认） |
@@ -186,6 +202,8 @@ sudo rsztui aura static ff8800
 灯光页：`b` 亮度，`e/E` 下一个/上一个灯效，`c` 选颜色，`S` 应用静态色。
 
 网络页：`v` 切换 连接/Wi-Fi/VPN，`j/k` 选择，`Enter` 连接或编辑 IPv4，`u` 激活，`d` 断开，`x` 删除，`o` 无线开关，`t` 热点，`s` 重新扫描 Wi-Fi。
+
+服务页：`j/k` 选择，`s` 启动，`t` 停止，`R` 重启，`e` 启用自启，`d` 禁用自启，`E` 启用并立即启动，`D` 禁用并停止。
 
 IPv4 编辑：`j/k` 选择字段，`Enter` 切换方法/下一项，直接输入地址/网关/DNS，`Backspace` 删除，`Ctrl+U` 清空，`a` 应用，`Esc` 取消。
 

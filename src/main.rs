@@ -4,6 +4,7 @@ mod cli;
 mod config;
 mod deps;
 mod nm;
+mod services;
 mod sys;
 mod ui;
 mod util;
