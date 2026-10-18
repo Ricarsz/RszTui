@@ -26,12 +26,12 @@
 ```toml
 [ui]
 theme = "ocean"      # ocean / forest / sunset / violet / mono
-rate_style = "btop"  # btop / decimal / bits
+rate_style = "binary"  # binary / decimal / bits
 ```
 
 速率格式：
 
-- `btop`：`KiB/s`、`MiB/s`（1024 进制）
+- `binary`：`KiB/s`、`MiB/s`（1024 进制）
 - `decimal`：`KB/s`、`MB/s`（1000 进制）
 - `bits`：`Kbit/s`、`Mbit/s`（按 1000 进制的比特率）
 

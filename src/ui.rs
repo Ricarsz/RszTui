@@ -3233,17 +3233,19 @@ fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
         &app.cfg.ui.theme,
         MouseAction::SetTheme,
     ));
+    let rate_key =
+        crate::config::RATE_STYLES[crate::config::rate_style_index(&app.cfg.ui.rate_style)].0;
     appearance.push(setting_choices(
         app,
         inner,
         inner.y + 7,
         "速率",
         &crate::config::RATE_STYLES,
-        &app.cfg.ui.rate_style,
+        rate_key,
         MouseAction::SetRateStyle,
     ));
     appearance.push(Line::from(Span::styled(
-        "  t 主题  y 速率   btop=KiB/s / 十进制=KB/s / 比特=Mbit/s",
+        "  t 主题  y 速率   二进制=KiB/s / 十进制=KB/s / 比特=Mbit/s",
         Style::new().fg(pal().dim),
     )));
     appearance.push(Line::raw(""));

@@ -103,7 +103,7 @@ pub fn human_bytes(value: f64) -> String {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RateStyle {
-    Btop,
+    Binary,
     Decimal,
     Bits,
 }
@@ -113,19 +113,19 @@ impl RateStyle {
         match name {
             "decimal" => Self::Decimal,
             "bits" => Self::Bits,
-            _ => Self::Btop,
+            _ => Self::Binary,
         }
     }
 }
 
 #[cfg(test)]
 pub fn human_rate(bytes_per_sec: f64) -> String {
-    human_rate_with(bytes_per_sec, RateStyle::Btop)
+    human_rate_with(bytes_per_sec, RateStyle::Binary)
 }
 
 pub fn human_rate_with(bytes_per_sec: f64, style: RateStyle) -> String {
     let (mut value, units, base, bits) = match style {
-        RateStyle::Btop => (
+        RateStyle::Binary => (
             bytes_per_sec.max(0.0),
             ["B/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s"],
             1024.0,

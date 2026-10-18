@@ -37,8 +37,11 @@ pub const THEMES: [(&str, &str); 5] = [
     ("mono", "灰阶"),
 ];
 
-pub const RATE_STYLES: [(&str, &str); 3] =
-    [("btop", "btop"), ("decimal", "十进制"), ("bits", "比特")];
+pub const RATE_STYLES: [(&str, &str); 3] = [
+    ("binary", "二进制"),
+    ("decimal", "十进制"),
+    ("bits", "比特"),
+];
 
 pub fn theme_index(name: &str) -> usize {
     THEMES.iter().position(|(key, _)| *key == name).unwrap_or(0)
@@ -98,7 +101,7 @@ fn default_theme() -> String {
 }
 
 fn default_rate_style() -> String {
-    "btop".into()
+    "binary".into()
 }
 
 fn default_true() -> bool {
