@@ -2,7 +2,7 @@ PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 CARGO ?= cargo
 
-.PHONY: all build install uninstall test check fmt pkg clean
+.PHONY: all build install uninstall test check fmt pkg setup-nopasswd remove-nopasswd clean
 
 all: build
 
@@ -15,6 +15,12 @@ install: build
 pkg:
 	cd packaging/aur && makepkg -f --noconfirm
 	@ls -lh packaging/aur/*.pkg.tar.zst
+
+setup-nopasswd:
+	./scripts/setup-nopasswd.sh
+
+remove-nopasswd:
+	./scripts/remove-nopasswd.sh
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/rsztui

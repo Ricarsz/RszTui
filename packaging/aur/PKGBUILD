@@ -37,4 +37,6 @@ package() {
   install -Dm755 target/release/rsztui "$pkgdir/usr/bin/rsztui"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm755 scripts/setup-nopasswd.sh "$pkgdir/usr/share/$pkgname/setup-nopasswd.sh"
+  install -Dm755 scripts/remove-nopasswd.sh "$pkgdir/usr/share/$pkgname/remove-nopasswd.sh"
 }
