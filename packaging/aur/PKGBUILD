@@ -1,6 +1,6 @@
 # Maintainer: Ricarsz <Ricarsz@users.noreply.github.com>
 pkgname=rsztui
-pkgver=0.4.0
+pkgver=0.5.0
 pkgrel=1
 pkgdesc="Terminal control panel for ASUS TUF laptops using asusctl and NetworkManager"
 arch=('x86_64' 'aarch64')
@@ -13,7 +13,7 @@ optdepends=(
   'networkmanager: Wi-Fi, IPv4/DNS, VPN and hotspot management'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('4f324c90ab65ff31597b041d049dabc1db8923e89f7101665899624e29282681')
+sha256sums=('60db65ecf5e1bf955b6236e5bd92dfcf86870de21ac87c38fd2b19e1953c5039')
 
 prepare() {
   cd "RszTui-$pkgver"

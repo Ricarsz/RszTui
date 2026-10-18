@@ -1,6 +1,6 @@
 pkgbase = rsztui
 	pkgdesc = Terminal control panel for ASUS TUF laptops using asusctl and NetworkManager
-	pkgver = 0.4.0
+	pkgver = 0.5.0
 	pkgrel = 1
 	url = https://github.com/Ricarsz/RszTui
 	arch = x86_64
@@ -11,7 +11,7 @@ pkgbase = rsztui
 	depends = gcc-libs
 	optdepends = asusctl: ASUS performance, battery, fan and lighting control
 	optdepends = networkmanager: Wi-Fi, IPv4/DNS, VPN and hotspot management
-	source = rsztui-0.4.0.tar.gz::https://github.com/Ricarsz/RszTui/archive/refs/tags/v0.4.0.tar.gz
-	sha256sums = 4f324c90ab65ff31597b041d049dabc1db8923e89f7101665899624e29282681
+	source = rsztui-0.5.0.tar.gz::https://github.com/Ricarsz/RszTui/archive/refs/tags/v0.5.0.tar.gz
+	sha256sums = 60db65ecf5e1bf955b6236e5bd92dfcf86870de21ac87c38fd2b19e1953c5039
 
 pkgname = rsztui
