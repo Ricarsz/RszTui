@@ -1006,7 +1006,7 @@ fn net(cmd: NetCmd, json: bool) -> Result<()> {
                 .all(|v| v.is_none())
                     && dot.is_none()
                 {
-                    bail!("至少指定一个参数，例如 --method manual --address 192.168.31.50/24");
+                    bail!("至少指定一个参数，例如 --method manual --address 192.0.2.10/24");
                 }
                 let mut settings = nm::connection_ipv4(&conn)?;
                 if let Some(method) = method {

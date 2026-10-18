@@ -50,14 +50,14 @@ sudo rsztui net wifi list
 sudo rsztui net wifi connect "MyWiFi" --password 'secret'
 sudo rsztui net wifi connect "MyWiFi" --password 'secret' --no-up
 sudo rsztui net radio off
-sudo rsztui net ip show mt3600
-sudo rsztui net ip set mt3600 --method manual \
-  --address 192.168.31.50/24 --gateway 192.168.31.1 --dns 1.1.1.1,8.8.8.8
-sudo rsztui net ip set mt3600 --method auto --dns 1.1.1.1
+sudo rsztui net ip show wired
+sudo rsztui net ip set wired --method manual \
+  --address 192.0.2.10/24 --gateway 192.0.2.1 --dns 1.1.1.1,8.8.8.8
+sudo rsztui net ip set wired --method auto --dns 1.1.1.1
 
 sudo rsztui net vpn list
 sudo rsztui net vpn up myvpn
-sudo rsztui net conn up mt3600
+sudo rsztui net conn up wired
 sudo rsztui net conn delete old-connection
 sudo rsztui net hotspot on --password 'hotspot123' --ssid rsztui-hotspot
 sudo rsztui net hotspot off

@@ -254,13 +254,13 @@ pub fn apply_ipv4(name: &str, settings: &Ipv4Settings) -> Result<()> {
 
     if method == "manual" {
         if settings.addresses.trim().is_empty() {
-            bail!("手动 IP 必须填写地址，例如 192.168.31.50/24");
+            bail!("手动 IP 必须填写地址，例如 192.0.2.10/24");
         }
         if !validate_cidr_list(&settings.addresses) {
-            bail!("地址格式不对，应为 192.168.31.50/24，多个用逗号分隔");
+            bail!("地址格式不对，应为 192.0.2.10/24，多个用逗号分隔");
         }
         if !settings.gateway.trim().is_empty() && !validate_ipv4(settings.gateway.trim()) {
-            bail!("网关格式不对，例如 192.168.31.1");
+            bail!("网关格式不对，例如 192.0.2.1");
         }
         if !settings.dns.trim().is_empty() && !validate_dns_list(&settings.dns) {
             bail!("DNS 格式不对，多个用逗号或空格分隔");
@@ -476,17 +476,17 @@ mod tests {
 
     #[test]
     fn checks_ipv4() {
-        assert!(validate_ipv4("192.168.31.1"));
-        assert!(!validate_ipv4("192.168.31"));
+        assert!(validate_ipv4("192.0.2.1"));
+        assert!(!validate_ipv4("192.0.2"));
         assert!(!validate_ipv4("256.1.1.1"));
     }
 
     #[test]
     fn checks_cidr() {
-        assert!(validate_cidr_list("192.168.31.50/24"));
+        assert!(validate_cidr_list("192.0.2.10/24"));
         assert!(validate_cidr_list("10.0.0.2/8, 10.0.0.3/8"));
-        assert!(!validate_cidr_list("192.168.31.50"));
-        assert!(!validate_cidr_list("192.168.31.50/33"));
+        assert!(!validate_cidr_list("192.0.2.10"));
+        assert!(!validate_cidr_list("192.0.2.10/33"));
     }
 
     #[test]
