@@ -74,7 +74,7 @@ rsztui --json doctor
 
 | 发行版 | asusctl | NetworkManager |
 |---|---|---|
-| Arch/CachyOS | `paru -S asusctl` | `sudo pacman -S networkmanager` |
+| Arch 系 | `paru -S asusctl` | `sudo pacman -S networkmanager` |
 | Fedora | `sudo dnf install asusctl`（Terra 仓库） | `sudo dnf install NetworkManager` |
 | openSUSE | `sudo zypper install asusctl` | `sudo zypper install NetworkManager` |
 | Debian/Ubuntu | 需从源码构建 | `sudo apt install networkmanager` |
