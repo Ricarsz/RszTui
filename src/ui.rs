@@ -88,10 +88,14 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
                 .filter(|v| !v.is_empty())
         })
         .unwrap_or_else(|| "未连接".into());
-    let temp = app
+    let cpu_temp = app
         .snap
-        .max_temp
-        .map(|v| format!("{v:.0}°C"))
+        .temps
+        .iter()
+        .find(|(label, _)| label.to_ascii_lowercase().contains("tctl"))
+        .map(|(_, value)| *value)
+        .or(app.snap.max_temp)
+        .map(|v| format!("{v:.1}°C"))
         .unwrap_or_else(|| "-".into());
 
     let lines = vec![
@@ -115,10 +119,18 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("   电池 ", Style::new().fg(DIM)),
             Span::styled(battery, Style::new().fg(battery_color(app))),
             Span::styled(format!("  {limit}"), Style::new().fg(DIM)),
-            Span::styled("   温度 ", Style::new().fg(DIM)),
+            Span::styled("   CPU 温度 ", Style::new().fg(DIM)),
             Span::styled(
-                temp,
-                Style::new().fg(temp_color(app.snap.max_temp.unwrap_or(0.0))),
+                cpu_temp,
+                Style::new().fg(temp_color(
+                    app.snap
+                        .temps
+                        .iter()
+                        .find(|(label, _)| label.to_ascii_lowercase().contains("tctl"))
+                        .map(|(_, value)| *value)
+                        .or(app.snap.max_temp)
+                        .unwrap_or(0.0),
+                )),
             ),
             Span::styled("   网络 ", Style::new().fg(DIM)),
             Span::styled(net, Style::new().fg(Color::Gray)),
@@ -1976,7 +1988,7 @@ fn draw_lighting_modes(frame: &mut Frame, area: Rect, app: &App) {
     let current = app.aura.as_ref().map(|aura| aura.mode);
 
     let mut lines = Vec::new();
-    for chunk in supported.chunks(3) {
+    for chunk in supported.chunks(2) {
         let mut spans = Vec::new();
         for mode in chunk {
             let active = current == Some(*mode);
