@@ -11,6 +11,7 @@ use ratatui::DefaultTerminal;
 
 use crate::asus::{self, BatteryInfo, GpuMode, PowerField, PowerSource, Profile, ProfileState};
 use crate::config::{Config, FanPreset};
+use crate::deps;
 use crate::nm;
 use crate::sys::{Collector, Snapshot};
 use crate::ui;
@@ -256,6 +257,7 @@ pub enum Modal {
 
 pub struct App {
     pub cfg: Config,
+    pub deps: deps::Report,
     pub tab: Tab,
     pub profile: Option<ProfileState>,
     pub battery: BatteryInfo,
@@ -301,8 +303,8 @@ pub struct App {
     collector: Collector,
 }
 
-pub fn run(cfg: Config) -> Result<()> {
-    let mut app = App::new(cfg);
+pub fn run(cfg: Config, report: deps::Report) -> Result<()> {
+    let mut app = App::new(cfg, report);
     let mut terminal = ratatui::init();
     // 启用 Kitty 键盘协议，让终端把数字小键盘标记为 KEYPAD（配合 NumLock）。
     let _ = execute!(
@@ -319,10 +321,11 @@ pub fn run(cfg: Config) -> Result<()> {
 }
 
 impl App {
-    pub fn new(cfg: Config) -> Self {
+    pub fn new(cfg: Config, report: deps::Report) -> Self {
         let tab = Tab::from_index(cfg.ui.last_tab);
         let mut app = Self {
             cfg,
+            deps: report,
             tab,
             profile: None,
             battery: BatteryInfo::default(),
@@ -382,6 +385,12 @@ impl App {
         if let Some(limit) = app.battery.limit {
             app.limit_edit = limit;
         }
+        if app.deps.has_warnings() {
+            app.modal = Some(Modal::Message {
+                title: "依赖检查".into(),
+                body: app.deps.summary_text(),
+            });
+        }
         app
     }
 
@@ -438,6 +447,7 @@ impl App {
                 self.confirm("退出", "退出 rsztui？", Pending::Quit);
             }
             KeyCode::Char('r') => {
+                self.deps = deps::check();
                 self.refresh_slow();
                 self.status = "已刷新".into();
                 self.status_err = false;

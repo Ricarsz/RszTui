@@ -2,6 +2,7 @@ mod app;
 mod asus;
 mod cli;
 mod config;
+mod deps;
 mod nm;
 mod sys;
 mod ui;
@@ -18,7 +19,8 @@ fn main() {
 
     let cli = Cli::parse();
 
-    if !util::is_root() {
+    let is_doctor = matches!(&cli.command, Some(cli::Cmd::Doctor));
+    if !is_doctor && !util::is_root() {
         eprintln!("rsztui 需要 root 权限运行，请使用：sudo rsztui");
         std::process::exit(1);
     }
@@ -31,9 +33,17 @@ fn main() {
         }
     };
 
+    let deps = deps::check();
     let result = match cli.command {
-        None => app::run(cfg),
-        Some(cmd) => cli::run(cmd, cli.json),
+        None => app::run(cfg, deps),
+        Some(cmd) => {
+            if !matches!(cmd, cli::Cmd::Doctor)
+                && let Some(warning) = deps.startup_warning()
+            {
+                eprintln!("{warning}");
+            }
+            cli::run(cmd, cli.json)
+        }
     };
 
     if let Err(err) = result {

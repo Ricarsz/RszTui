@@ -4,6 +4,7 @@ use serde_json::json;
 
 use crate::asus::{self, GpuMode, PowerSource, Profile};
 use crate::config::{Config, FanPreset};
+use crate::deps;
 use crate::nm;
 
 #[derive(Parser)]
@@ -63,6 +64,8 @@ pub enum Cmd {
     },
     /// 显示配置路径与预设
     Config,
+    /// 检查 asusctl/asusd/NetworkManager 依赖
+    Doctor,
 }
 
 #[derive(Subcommand)]
@@ -321,7 +324,41 @@ pub fn run(cmd: Cmd, json: bool) -> Result<()> {
         Cmd::Fan { cmd } => fan(cmd, json),
         Cmd::Aura { cmd } => aura(cmd, json),
         Cmd::Config => config(json),
+        Cmd::Doctor => doctor(json),
     }
+}
+
+fn doctor(json: bool) -> Result<()> {
+    let report = deps::check();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("依赖检查 · {}", report.distro);
+        println!();
+        for check in &report.checks {
+            println!(
+                "{} {:<16} {}",
+                if check.ok { "✅" } else { "❌" },
+                check.name,
+                check.detail
+            );
+            if !check.ok
+                && let Some(hint) = &check.hint
+            {
+                for line in hint.lines() {
+                    println!("   {line}");
+                }
+            }
+        }
+    }
+    if !report.all_ok() {
+        bail!("依赖检查未通过");
+    }
+    if report.has_warnings() {
+        println!();
+        println!("存在硬件/依赖警告：ASUS 功能可能不可用，网络功能不受影响。");
+    }
+    Ok(())
 }
 
 fn status(json: bool) -> Result<()> {

@@ -1540,7 +1540,7 @@ fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let lines = vec![
+    let mut lines = vec![
         Line::from(vec![
             Span::styled("  配置文件  ", Style::new().fg(DIM)),
             Span::styled(
@@ -1571,6 +1571,34 @@ fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
             ),
         ]),
         Line::raw(""),
+        Line::from(Span::styled(" 依赖与硬件", Style::new().fg(ACCENT).bold())),
+    ];
+
+    for check in &app.deps.checks {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(
+                    "  {} {:<14}",
+                    if check.ok { "✅" } else { "❌" },
+                    check.name
+                ),
+                Style::new().fg(if check.ok { GOOD } else { BAD }),
+            ),
+            Span::styled(
+                util::truncate(&check.detail, 52),
+                Style::new().fg(Color::Gray),
+            ),
+        ]));
+    }
+    if app.deps.has_warnings() {
+        lines.push(Line::from(Span::styled(
+            "  运行 rsztui doctor 查看安装/启动命令",
+            Style::new().fg(WARN),
+        )));
+    }
+
+    lines.extend([
+        Line::raw(""),
         Line::from(Span::styled(" 说明", Style::new().fg(ACCENT).bold())),
         Line::from(Span::styled(
             "  性能模式、功耗、电池上限写入 /etc/asusd/asusd.ron，",
@@ -1582,7 +1610,7 @@ fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
         )),
         Line::raw(""),
         Line::from(Span::styled("  按 ? 查看完整快捷键", Style::new().fg(DIM))),
-    ];
+    ]);
 
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
@@ -1625,16 +1653,20 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal) {
+    let (v, h) = match modal {
+        Modal::Message { .. } => ([8, 84, 8], [8, 84, 8]),
+        _ => ([30, 40, 30], [18, 64, 18]),
+    };
     let vertical = Layout::vertical([
-        Constraint::Percentage(30),
-        Constraint::Percentage(40),
-        Constraint::Percentage(30),
+        Constraint::Percentage(v[0]),
+        Constraint::Percentage(v[1]),
+        Constraint::Percentage(v[2]),
     ])
     .split(area);
     let horizontal = Layout::horizontal([
-        Constraint::Percentage(18),
-        Constraint::Percentage(64),
-        Constraint::Percentage(18),
+        Constraint::Percentage(h[0]),
+        Constraint::Percentage(h[1]),
+        Constraint::Percentage(h[2]),
     ])
     .split(vertical[1]);
     let popup = horizontal[1];

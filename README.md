@@ -24,6 +24,15 @@ ASUS TUF 的终端控制台。Rust + [ratatui](https://ratatui.rs/)，底层调�
 
 启动时如果不是 root 会直接提示退出。
 
+依赖与硬件检查：
+
+```bash
+rsztui doctor          # 普通用户即可运行
+rsztui --json doctor
+```
+
+会检测发行版、是否 ASUS 笔记本（DMI 厂商/机箱类型）、`asusctl`、`asusd`、`nmcli`、`NetworkManager`。缺项会给出对应发行版的安装/启动命令；TUI 启动时也会弹出同样的提示，设置页可随时查看。
+
 ## 安装
 
 ### AUR（推荐）
