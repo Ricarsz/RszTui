@@ -23,6 +23,32 @@ pub struct UiConfig {
     pub last_tab: usize,
     #[serde(default = "default_true")]
     pub sparkline: bool,
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    #[serde(default = "default_rate_style")]
+    pub rate_style: String,
+}
+
+pub const THEMES: [(&str, &str); 5] = [
+    ("ocean", "海洋"),
+    ("forest", "森林"),
+    ("sunset", "日落"),
+    ("violet", "紫罗兰"),
+    ("mono", "灰阶"),
+];
+
+pub const RATE_STYLES: [(&str, &str); 3] =
+    [("btop", "btop"), ("decimal", "十进制"), ("bits", "比特")];
+
+pub fn theme_index(name: &str) -> usize {
+    THEMES.iter().position(|(key, _)| *key == name).unwrap_or(0)
+}
+
+pub fn rate_style_index(name: &str) -> usize {
+    RATE_STYLES
+        .iter()
+        .position(|(key, _)| *key == name)
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,8 +87,18 @@ impl Default for UiConfig {
         Self {
             last_tab: 0,
             sparkline: true,
+            theme: default_theme(),
+            rate_style: default_rate_style(),
         }
     }
+}
+
+fn default_theme() -> String {
+    "ocean".into()
+}
+
+fn default_rate_style() -> String {
+    "btop".into()
 }
 
 fn default_true() -> bool {

@@ -101,18 +101,59 @@ pub fn human_bytes(value: f64) -> String {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateStyle {
+    Btop,
+    Decimal,
+    Bits,
+}
+
+impl RateStyle {
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "decimal" => Self::Decimal,
+            "bits" => Self::Bits,
+            _ => Self::Btop,
+        }
+    }
+}
+
+#[cfg(test)]
 pub fn human_rate(bytes_per_sec: f64) -> String {
-    const UNITS: [&str; 5] = ["B/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s"];
-    let mut value = bytes_per_sec.max(0.0);
+    human_rate_with(bytes_per_sec, RateStyle::Btop)
+}
+
+pub fn human_rate_with(bytes_per_sec: f64, style: RateStyle) -> String {
+    let (mut value, units, base, bits) = match style {
+        RateStyle::Btop => (
+            bytes_per_sec.max(0.0),
+            ["B/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s"],
+            1024.0,
+            false,
+        ),
+        RateStyle::Decimal => (
+            bytes_per_sec.max(0.0),
+            ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"],
+            1000.0,
+            false,
+        ),
+        RateStyle::Bits => (
+            bytes_per_sec.max(0.0) * 8.0,
+            ["b/s", "Kbit/s", "Mbit/s", "Gbit/s", "Tbit/s"],
+            1000.0,
+            true,
+        ),
+    };
     let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
+    while value >= base && unit < units.len() - 1 {
+        value /= base;
         unit += 1;
     }
     if unit == 0 {
-        format!("{value:.0} {}", UNITS[unit])
+        let suffix = if bits { "bit/s" } else { units[unit] };
+        format!("{value:.0} {suffix}")
     } else {
-        format!("{value:.1} {}", UNITS[unit])
+        format!("{value:.1} {}", units[unit])
     }
 }
 
@@ -163,6 +204,13 @@ mod tests {
         assert_eq!(human_rate(0.0), "0 B/s");
         assert_eq!(human_rate(1536.0), "1.5 KiB/s");
         assert_eq!(human_rate(1024.0 * 1024.0), "1.0 MiB/s");
+    }
+
+    #[test]
+    fn formats_rates_with_style() {
+        assert_eq!(human_rate_with(1_500.0, RateStyle::Decimal), "1.5 KB/s");
+        assert_eq!(human_rate_with(1_500.0, RateStyle::Bits), "12.0 Kbit/s");
+        assert_eq!(human_rate_with(0.0, RateStyle::Bits), "0 bit/s");
     }
 
     #[test]

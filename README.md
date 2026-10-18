@@ -13,6 +13,7 @@ ASUS TUF 的终端控制台。Rust + [ratatui](https://ratatui.rs/)，底层调�
 - **灯光**：当前灯效/亮度/颜色、Aura 模式切换、静态色
 - **网络**：Wi-Fi 扫描连接、DHCP/静态 IP、网关、DNS/DoT、VPN、热点、连接管理、Ping/DNS 查询、DNS/邻居缓存
 - **服务**：asusd、asus-shutdown、NetworkManager、systemd-resolved 的启停/重启/自启
+- **外观**：5 套配色主题，网络速率单位可选 btop / 十进制 / 比特
 - **诊断**：发行版、ASUS 笔记本、CPU/GPU 型号、asusctl/asusd/nmcli/NetworkManager 检测
 - **CLI**：与 TUI 同能力，支持 `--json`
 
@@ -35,7 +36,7 @@ sudo rsztui
 
 ## 当前版本
 
-`0.11.5` · Arch / CachyOS · 需要 `asusctl`、`NetworkManager`，必须 `sudo` 运行（`doctor` 除外）。
+`0.12.0` · Arch / CachyOS · 需要 `asusctl`、`NetworkManager`，必须 `sudo` 运行（`doctor` 除外）。
 
 ## 许可
 

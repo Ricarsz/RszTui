@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -11,19 +13,125 @@ use crate::asus::{self, GpuMode, Profile};
 use crate::nm;
 use crate::util;
 
-const ACCENT: Color = Color::Rgb(90, 200, 220);
-const TEXT: Color = Color::Rgb(214, 221, 230);
-const DIM: Color = Color::Rgb(108, 117, 130);
-const FAINT: Color = Color::Rgb(78, 88, 102);
-const GOOD: Color = Color::Rgb(120, 210, 140);
-const WARN: Color = Color::Rgb(240, 190, 90);
-const BAD: Color = Color::Rgb(255, 110, 90);
-const PANEL_BORDER: Color = Color::Rgb(72, 82, 96);
-const SURFACE: Color = Color::Rgb(40, 47, 58);
-const SURFACE_HOVER: Color = Color::Rgb(33, 40, 50);
-const SELECTED: Color = Color::Rgb(29, 46, 56);
+#[derive(Clone, Copy)]
+struct Palette {
+    accent: Color,
+    chart: Color,
+    text: Color,
+    dim: Color,
+    faint: Color,
+    good: Color,
+    warn: Color,
+    bad: Color,
+    border: Color,
+    surface: Color,
+    surface_hover: Color,
+    selected: Color,
+}
+
+const OCEAN: Palette = Palette {
+    accent: Color::Rgb(90, 200, 220),
+    chart: Color::Rgb(130, 150, 240),
+    text: Color::Rgb(214, 221, 230),
+    dim: Color::Rgb(108, 117, 130),
+    faint: Color::Rgb(78, 88, 102),
+    good: Color::Rgb(120, 210, 140),
+    warn: Color::Rgb(240, 190, 90),
+    bad: Color::Rgb(255, 110, 90),
+    border: Color::Rgb(72, 82, 96),
+    surface: Color::Rgb(40, 47, 58),
+    surface_hover: Color::Rgb(33, 40, 50),
+    selected: Color::Rgb(29, 46, 56),
+};
+
+const FOREST: Palette = Palette {
+    accent: Color::Rgb(122, 210, 168),
+    chart: Color::Rgb(135, 185, 225),
+    text: Color::Rgb(218, 229, 222),
+    dim: Color::Rgb(108, 126, 116),
+    faint: Color::Rgb(78, 96, 86),
+    good: Color::Rgb(130, 215, 150),
+    warn: Color::Rgb(235, 190, 100),
+    bad: Color::Rgb(250, 110, 90),
+    border: Color::Rgb(70, 90, 80),
+    surface: Color::Rgb(38, 50, 44),
+    surface_hover: Color::Rgb(31, 43, 37),
+    selected: Color::Rgb(27, 48, 39),
+};
+
+const SUNSET: Palette = Palette {
+    accent: Color::Rgb(250, 166, 102),
+    chart: Color::Rgb(235, 145, 120),
+    text: Color::Rgb(236, 226, 214),
+    dim: Color::Rgb(130, 116, 104),
+    faint: Color::Rgb(96, 82, 70),
+    good: Color::Rgb(150, 205, 125),
+    warn: Color::Rgb(245, 185, 85),
+    bad: Color::Rgb(255, 100, 85),
+    border: Color::Rgb(94, 76, 66),
+    surface: Color::Rgb(52, 42, 36),
+    surface_hover: Color::Rgb(43, 34, 29),
+    selected: Color::Rgb(59, 42, 31),
+};
+
+const VIOLET: Palette = Palette {
+    accent: Color::Rgb(190, 158, 255),
+    chart: Color::Rgb(150, 175, 255),
+    text: Color::Rgb(226, 220, 236),
+    dim: Color::Rgb(118, 111, 136),
+    faint: Color::Rgb(86, 80, 104),
+    good: Color::Rgb(130, 210, 170),
+    warn: Color::Rgb(240, 190, 110),
+    bad: Color::Rgb(255, 115, 130),
+    border: Color::Rgb(82, 74, 100),
+    surface: Color::Rgb(44, 40, 56),
+    surface_hover: Color::Rgb(35, 32, 46),
+    selected: Color::Rgb(43, 34, 61),
+};
+
+const MONO: Palette = Palette {
+    accent: Color::Rgb(198, 204, 212),
+    chart: Color::Rgb(170, 176, 186),
+    text: Color::Rgb(232, 234, 238),
+    dim: Color::Rgb(126, 130, 136),
+    faint: Color::Rgb(90, 94, 100),
+    good: Color::Rgb(170, 205, 175),
+    warn: Color::Rgb(225, 195, 120),
+    bad: Color::Rgb(235, 125, 115),
+    border: Color::Rgb(86, 90, 96),
+    surface: Color::Rgb(44, 46, 50),
+    surface_hover: Color::Rgb(36, 38, 42),
+    selected: Color::Rgb(50, 52, 58),
+};
+
+thread_local! {
+    static PALETTE: Cell<Palette> = const { Cell::new(OCEAN) };
+}
+
+fn set_palette(palette: Palette) {
+    PALETTE.with(|cell| cell.set(palette));
+}
+
+fn pal() -> Palette {
+    PALETTE.with(|cell| cell.get())
+}
+
+fn palette_for(name: &str) -> Palette {
+    match name {
+        "forest" => FOREST,
+        "sunset" => SUNSET,
+        "violet" => VIOLET,
+        "mono" => MONO,
+        _ => OCEAN,
+    }
+}
+
+fn rate_style(app: &App) -> util::RateStyle {
+    util::RateStyle::from_name(&app.cfg.ui.rate_style)
+}
 
 pub fn draw(frame: &mut Frame, app: &App) {
+    set_palette(palette_for(&app.cfg.ui.theme));
     app.mouse_targets.borrow_mut().clear();
     let area = frame.area();
     let chunks = Layout::vertical([
@@ -62,7 +170,10 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
         .map(|p| p.active)
         .map(|p| p.zh())
         .unwrap_or("未知");
-    let profile_color = app.profile.map(|p| profile_color(p.active)).unwrap_or(DIM);
+    let profile_color = app
+        .profile
+        .map(|p| profile_color(p.active))
+        .unwrap_or(pal().dim);
     let model = app
         .deps
         .product
@@ -103,33 +214,36 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
         .map(|v| format!("{v:.1}°C"))
         .unwrap_or_else(|| "-".into());
     let (power, power_color) = match app.battery.ac_online {
-        Some(true) => ("AC 供电", GOOD),
-        Some(false) => ("电池供电", WARN),
-        None => ("供电未知", DIM),
+        Some(true) => ("AC 供电", pal().good),
+        Some(false) => ("电池供电", pal().warn),
+        None => ("供电未知", pal().dim),
     };
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(PANEL_BORDER))
+        .border_style(Style::new().fg(pal().border))
         .title(Line::from(Span::styled(
             " 状态 ",
-            Style::new().fg(ACCENT).bold(),
+            Style::new().fg(pal().accent).bold(),
         )));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let left = Line::from(vec![
-        Span::styled(" RszTui ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
+        Span::styled(
+            " RszTui ",
+            Style::new().fg(Color::Black).bg(pal().accent).bold(),
+        ),
         Span::raw("  "),
-        Span::styled(model, Style::new().fg(TEXT).bold()),
+        Span::styled(model, Style::new().fg(pal().text).bold()),
     ]);
     let right = Line::from(vec![
         Span::raw(" "),
         Span::styled(power, Style::new().fg(power_color)),
-        Span::styled("  ·  ", Style::new().fg(PANEL_BORDER)),
+        Span::styled("  ·  ", Style::new().fg(pal().border)),
         Span::styled(
             format!("up {}", format_uptime(app.snap.uptime)),
-            Style::new().fg(DIM),
+            Style::new().fg(pal().dim),
         ),
     ]);
     let right_width = right.width().min(inner.width as usize) as u16;
@@ -139,7 +253,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(left), top[0]);
     frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), top[1]);
 
-    let separator = || Span::styled(" │ ", Style::new().fg(PANEL_BORDER));
+    let separator = || Span::styled(" │ ", Style::new().fg(pal().border));
     let mut status = vec![
         Span::styled(" ●", Style::new().fg(profile_color)),
         Span::styled(
@@ -147,17 +261,20 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(Color::Black).bg(profile_color).bold(),
         ),
         separator(),
-        Span::styled("GPU ", Style::new().fg(DIM)),
-        Span::styled(gpu, Style::new().fg(TEXT)),
+        Span::styled("GPU ", Style::new().fg(pal().dim)),
+        Span::styled(gpu, Style::new().fg(pal().text)),
         separator(),
-        Span::styled("电池 ", Style::new().fg(DIM)),
+        Span::styled("电池 ", Style::new().fg(pal().dim)),
         Span::styled(battery, Style::new().fg(battery_color(app))),
     ];
     if inner.width >= 84 {
-        status.push(Span::styled(format!("  {limit}"), Style::new().fg(DIM)));
+        status.push(Span::styled(
+            format!("  {limit}"),
+            Style::new().fg(pal().dim),
+        ));
     }
     status.push(separator());
-    status.push(Span::styled("CPU ", Style::new().fg(DIM)));
+    status.push(Span::styled("CPU ", Style::new().fg(pal().dim)));
     status.push(Span::styled(
         cpu_temp,
         Style::new().fg(temp_color(
@@ -172,8 +289,8 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
     ));
     if inner.width >= 76 {
         status.push(separator());
-        status.push(Span::styled("网络 ", Style::new().fg(DIM)));
-        status.push(Span::styled(net, Style::new().fg(TEXT)));
+        status.push(Span::styled("网络 ", Style::new().fg(pal().dim)));
+        status.push(Span::styled(net, Style::new().fg(pal().text)));
     }
     frame.render_widget(Paragraph::new(Line::from(status)), rows[1]);
 }
@@ -213,26 +330,26 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
 
         let hovered = app.hover == Some(MouseAction::Tab(*tab));
         let base = if selected {
-            Style::new().bg(SELECTED)
+            Style::new().bg(pal().selected)
         } else if hovered {
-            Style::new().bg(SURFACE_HOVER)
+            Style::new().bg(pal().surface_hover)
         } else {
             Style::new()
         };
         if selected {
             lines.push(Line::from(vec![
-                Span::styled(format!(" {marker} "), base.fg(ACCENT).bold()),
-                Span::styled(format!("{key} "), base.fg(ACCENT)),
-                Span::styled(format!("{icon} "), base.fg(ACCENT)),
-                Span::styled(label, base.fg(TEXT).bold()),
+                Span::styled(format!(" {marker} "), base.fg(pal().accent).bold()),
+                Span::styled(format!("{key} "), base.fg(pal().accent)),
+                Span::styled(format!("{icon} "), base.fg(pal().accent)),
+                Span::styled(label, base.fg(pal().text).bold()),
                 Span::styled(pad, base),
             ]));
         } else {
             lines.push(Line::from(vec![
-                Span::styled(format!(" {marker} "), base.fg(FAINT)),
-                Span::styled(format!("{key} "), base.fg(DIM)),
-                Span::styled(format!("{icon} "), base.fg(FAINT)),
-                Span::styled(label, base.fg(TEXT)),
+                Span::styled(format!(" {marker} "), base.fg(pal().faint)),
+                Span::styled(format!("{key} "), base.fg(pal().dim)),
+                Span::styled(format!("{icon} "), base.fg(pal().faint)),
+                Span::styled(label, base.fg(pal().text)),
                 Span::styled(pad, base),
             ]));
         }
@@ -245,12 +362,15 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(
             "  ● ",
             Style::new()
-                .fg(app.profile.map(|p| profile_color(p.active)).unwrap_or(DIM))
+                .fg(app
+                    .profile
+                    .map(|p| profile_color(p.active))
+                    .unwrap_or(pal().dim))
                 .bold(),
         ),
         Span::styled(
             app.profile.map(|p| p.active.zh()).unwrap_or("未知"),
-            Style::new().fg(TEXT).bold(),
+            Style::new().fg(pal().text).bold(),
         ),
     ]));
     lines.push(Line::from(vec![
@@ -260,22 +380,22 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
                 .capacity
                 .map(|v| format!("{v}%"))
                 .unwrap_or_else(|| "?".into()),
-            Style::new().fg(TEXT).bold(),
+            Style::new().fg(pal().text).bold(),
         ),
         Span::styled(
             app.battery
                 .limit
                 .map(|v| format!("  上限 {v}%"))
                 .unwrap_or_default(),
-            Style::new().fg(DIM),
+            Style::new().fg(pal().dim),
         ),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("  ▣ ", Style::new().fg(ACCENT)),
-        Span::styled(gpu_short(app), Style::new().fg(TEXT)),
+        Span::styled("  ▣ ", Style::new().fg(pal().accent)),
+        Span::styled(gpu_short(app), Style::new().fg(pal().text)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("  ⌁ ", Style::new().fg(FAINT)),
+        Span::styled("  ⌁ ", Style::new().fg(pal().faint)),
         Span::styled(
             app.ssid
                 .clone()
@@ -287,14 +407,14 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
                         .filter(|v| !v.is_empty())
                 })
                 .unwrap_or_else(|| "未连接".into()),
-            Style::new().fg(TEXT),
+            Style::new().fg(pal().text),
         ),
     ]));
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .title(Span::styled(" 导航 ", Style::new().fg(ACCENT).bold()))
-        .border_style(Style::new().fg(PANEL_BORDER));
+        .title(Span::styled(" 导航 ", Style::new().fg(pal().accent).bold()))
+        .border_style(Style::new().fg(pal().border));
     frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
 }
 
@@ -302,10 +422,10 @@ fn sidebar_heading(label: &str, width: usize) -> Line<'static> {
     let label = format!(" {label} ");
     let used = UnicodeWidthStr::width(label.as_str());
     Line::from(vec![
-        Span::styled(label, Style::new().fg(DIM).bold()),
+        Span::styled(label, Style::new().fg(pal().dim).bold()),
         Span::styled(
             "─".repeat(width.saturating_sub(used + 1)),
-            Style::new().fg(FAINT),
+            Style::new().fg(pal().faint),
         ),
     ])
 }
@@ -500,11 +620,11 @@ fn draw_cpu(frame: &mut Frame, area: Rect, app: &App) {
     let mut summary = vec![
         Span::styled(
             format!(" {:.1}%", app.snap.cpu_pct),
-            Style::new().fg(GOOD).bold(),
+            Style::new().fg(pal().good).bold(),
         ),
         Span::styled(
             format!("  负载 {:.2}", app.snap.load1),
-            Style::new().fg(DIM),
+            Style::new().fg(pal().dim),
         ),
         Span::styled(
             format!(
@@ -513,30 +633,24 @@ fn draw_cpu(frame: &mut Frame, area: Rect, app: &App) {
                     .map(|v| format!("{v:.1}°C"))
                     .unwrap_or_else(|| "-".into())
             ),
-            Style::new().fg(DIM),
+            Style::new().fg(pal().dim),
         ),
     ];
     if inner.width >= 50 {
         summary.push(Span::styled(
             format!("  量程 {graph_max}%"),
-            Style::new().fg(DIM),
+            Style::new().fg(pal().dim),
         ));
     }
     frame.render_widget(Paragraph::new(Line::from(summary)), rows[0]);
 
-    draw_graph_inner(
-        frame,
-        rows[1],
-        &app.cpu_hist,
-        graph_max,
-        Color::Rgb(90, 200, 220),
-    );
+    draw_graph_inner(frame, rows[1], &app.cpu_hist, graph_max, pal().accent);
 
     if app.snap.cpu_cores.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 " 等待核心采样…",
-                Style::new().fg(DIM),
+                Style::new().fg(pal().dim),
             ))),
             rows[2],
         );
@@ -587,18 +701,12 @@ fn draw_memory(frame: &mut Frame, area: Rect, app: &App) {
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(
-                "█".repeat(used_cells),
-                Style::new().fg(Color::Rgb(130, 150, 240)),
-            ),
+            Span::styled("█".repeat(used_cells), Style::new().fg(pal().chart)),
             Span::styled(
                 "█".repeat(cached_cells),
-                Style::new().fg(Color::Rgb(80, 130, 150)),
+                Style::new().fg(mix_color(pal().chart, pal().surface, 0.45)),
             ),
-            Span::styled(
-                "░".repeat(free_cells),
-                Style::new().fg(Color::Rgb(50, 58, 70)),
-            ),
+            Span::styled("░".repeat(free_cells), Style::new().fg(pal().faint)),
         ])),
         rows[0],
     );
@@ -608,26 +716,20 @@ fn draw_memory(frame: &mut Frame, area: Rect, app: &App) {
             util::human_bytes(used as f64),
             util::human_bytes(total as f64)
         ),
-        Style::new().fg(TEXT),
+        Style::new().fg(pal().text),
     )];
     if inner.width >= 55 {
         legend.push(Span::styled(
             format!("   缓存 {}", util::human_bytes(cached as f64)),
-            Style::new().fg(DIM),
+            Style::new().fg(pal().dim),
         ));
         legend.push(Span::styled(
             format!("   空闲 {}", util::human_bytes(free as f64)),
-            Style::new().fg(DIM),
+            Style::new().fg(pal().dim),
         ));
     }
     frame.render_widget(Paragraph::new(Line::from(legend)), rows[1]);
-    draw_graph_inner(
-        frame,
-        rows[2],
-        &app.mem_hist,
-        100,
-        Color::Rgb(130, 150, 240),
-    );
+    draw_graph_inner(frame, rows[2], &app.mem_hist, 100, pal().chart);
 }
 
 fn draw_network_graph(frame: &mut Frame, area: Rect, app: &App) {
@@ -647,29 +749,41 @@ fn draw_network_graph(frame: &mut Frame, area: Rect, app: &App) {
     let tx_peak = app.tx_hist.iter().copied().max().unwrap_or(0).max(1);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" ↓ ", Style::new().fg(ACCENT)),
-            Span::styled(util::human_rate(app.snap.rx_bps), Style::new().fg(TEXT)),
+            Span::styled(" ↓ ", Style::new().fg(pal().accent)),
             Span::styled(
-                format!("   峰值 {}", util::human_rate(rx_peak as f64)),
-                Style::new().fg(DIM),
+                util::human_rate_with(app.snap.rx_bps, rate_style(app)),
+                Style::new().fg(pal().text),
+            ),
+            Span::styled(
+                format!(
+                    "   峰值 {}",
+                    util::human_rate_with(rx_peak as f64, rate_style(app))
+                ),
+                Style::new().fg(pal().dim),
             ),
         ])),
         parts[0],
     );
-    draw_graph_inner(frame, parts[1], &app.rx_hist, rx_peak, ACCENT);
+    draw_graph_inner(frame, parts[1], &app.rx_hist, rx_peak, pal().accent);
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" ↑ ", Style::new().fg(WARN)),
-            Span::styled(util::human_rate(app.snap.tx_bps), Style::new().fg(TEXT)),
+            Span::styled(" ↑ ", Style::new().fg(pal().warn)),
             Span::styled(
-                format!("   峰值 {}", util::human_rate(tx_peak as f64)),
-                Style::new().fg(DIM),
+                util::human_rate_with(app.snap.tx_bps, rate_style(app)),
+                Style::new().fg(pal().text),
+            ),
+            Span::styled(
+                format!(
+                    "   峰值 {}",
+                    util::human_rate_with(tx_peak as f64, rate_style(app))
+                ),
+                Style::new().fg(pal().dim),
             ),
         ])),
         parts[2],
     );
-    draw_graph_inner(frame, parts[3], &app.tx_hist, tx_peak, WARN);
+    draw_graph_inner(frame, parts[3], &app.tx_hist, tx_peak, pal().warn);
 }
 
 fn draw_temps(frame: &mut Frame, area: Rect, app: &App) {
@@ -679,7 +793,10 @@ fn draw_temps(frame: &mut Frame, area: Rect, app: &App) {
 
     if app.snap.temps.is_empty() {
         frame.render_widget(
-            Paragraph::new(Span::styled("  没有可读的温度传感器", Style::new().fg(DIM))),
+            Paragraph::new(Span::styled(
+                "  没有可读的温度传感器",
+                Style::new().fg(pal().dim),
+            )),
             inner,
         );
         return;
@@ -697,7 +814,7 @@ fn draw_temps(frame: &mut Frame, area: Rect, app: &App) {
             Line::from(vec![
                 Span::styled(
                     format!("  {:<26}", util::truncate(label, 26)),
-                    Style::new().fg(TEXT),
+                    Style::new().fg(pal().text),
                 ),
                 Span::styled(bar, Style::new().fg(temp_color(*value))),
                 Span::styled(
@@ -747,9 +864,9 @@ fn draw_battery_panel(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(
                 format!("  {}", app.battery.status_zh()),
                 Style::new().fg(if app.battery.ac_online == Some(true) {
-                    GOOD
+                    pal().good
                 } else {
-                    WARN
+                    pal().warn
                 }),
             ),
             Span::styled(
@@ -758,7 +875,7 @@ fn draw_battery_panel(frame: &mut Frame, area: Rect, app: &App) {
                     Some(false) => "   电池供电",
                     None => "",
                 },
-                Style::new().fg(DIM),
+                Style::new().fg(pal().dim),
             ),
         ])),
         rows[1],
@@ -781,12 +898,12 @@ fn draw_battery_panel(frame: &mut Frame, area: Rect, app: &App) {
         .unwrap_or_else(|| "-".into());
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("  功率 ", Style::new().fg(DIM)),
-            Span::styled(power, Style::new().fg(TEXT)),
-            Span::styled("   健康 ", Style::new().fg(DIM)),
-            Span::styled(health, Style::new().fg(TEXT)),
-            Span::styled("   上限 ", Style::new().fg(DIM)),
-            Span::styled(limit, Style::new().fg(TEXT)),
+            Span::styled("  功率 ", Style::new().fg(pal().dim)),
+            Span::styled(power, Style::new().fg(pal().text)),
+            Span::styled("   健康 ", Style::new().fg(pal().dim)),
+            Span::styled(health, Style::new().fg(pal().text)),
+            Span::styled("   上限 ", Style::new().fg(pal().dim)),
+            Span::styled(limit, Style::new().fg(pal().text)),
         ])),
         rows[2],
     );
@@ -797,8 +914,11 @@ fn draw_battery_panel(frame: &mut Frame, area: Rect, app: &App) {
     ) {
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled("  容量 ", Style::new().fg(DIM)),
-                Span::styled(format!("{full:.1} / {design:.1} Wh"), Style::new().fg(TEXT)),
+                Span::styled("  容量 ", Style::new().fg(pal().dim)),
+                Span::styled(
+                    format!("{full:.1} / {design:.1} Wh"),
+                    Style::new().fg(pal().text),
+                ),
                 Span::styled(
                     format!(
                         "   循环 {} 次",
@@ -807,7 +927,7 @@ fn draw_battery_panel(frame: &mut Frame, area: Rect, app: &App) {
                             .map(|v| v.to_string())
                             .unwrap_or_else(|| "-".into())
                     ),
-                    Style::new().fg(DIM),
+                    Style::new().fg(pal().dim),
                 ),
             ])),
             rows[3],
@@ -823,7 +943,7 @@ fn draw_battery_panel(frame: &mut Frame, area: Rect, app: &App) {
                     .map(|v| format!("{v:.2} V"))
                     .unwrap_or_else(|| "-".into())
             ),
-            Style::new().fg(DIM),
+            Style::new().fg(pal().dim),
         ))),
         rows[4],
     );
@@ -837,14 +957,14 @@ fn draw_asus_panel(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines = Vec::new();
     if let Some(state) = app.profile {
         lines.push(Line::from(vec![
-            Span::styled("  当前 ", Style::new().fg(DIM)),
+            Span::styled("  当前 ", Style::new().fg(pal().dim)),
             Span::styled(
                 state.active.zh(),
                 Style::new().fg(profile_color(state.active)).bold(),
             ),
             Span::styled(
                 format!("   AC {} / 电池 {}", state.ac.zh(), state.battery.zh()),
-                Style::new().fg(DIM),
+                Style::new().fg(pal().dim),
             ),
         ]));
     }
@@ -856,8 +976,8 @@ fn draw_asus_panel(frame: &mut Frame, area: Rect, app: &App) {
         .map(|f| format!("{} {}", f.value, f.unit))
         .collect();
     lines.push(Line::from(vec![
-        Span::styled("  功耗  ", Style::new().fg(DIM)),
-        Span::styled(power.join(" / "), Style::new().fg(TEXT)),
+        Span::styled("  功耗  ", Style::new().fg(pal().dim)),
+        Span::styled(power.join(" / "), Style::new().fg(pal().text)),
     ]));
 
     let width = inner.width as usize;
@@ -866,36 +986,36 @@ fn draw_asus_panel(frame: &mut Frame, area: Rect, app: &App) {
         app.hw.cpu_model, app.hw.cores, app.hw.threads
     );
     lines.push(Line::from(vec![
-        Span::styled("  CPU   ", Style::new().fg(DIM)),
+        Span::styled("  CPU   ", Style::new().fg(pal().dim)),
         Span::styled(
             util::truncate(&cpu, width.saturating_sub(8)),
-            Style::new().fg(TEXT),
+            Style::new().fg(pal().text),
         ),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("  显卡  ", Style::new().fg(DIM)),
+        Span::styled("  显卡  ", Style::new().fg(pal().dim)),
         Span::styled(
             util::truncate(&app.hw.gpus.join(" / "), width.saturating_sub(8)),
-            Style::new().fg(TEXT),
+            Style::new().fg(pal().text),
         ),
     ]));
 
     if let Some(mode) = app.gpu_mode {
         lines.push(Line::from(vec![
-            Span::styled("  模式  ", Style::new().fg(DIM)),
-            Span::styled(mode.zh(), Style::new().fg(TEXT)),
+            Span::styled("  模式  ", Style::new().fg(pal().dim)),
+            Span::styled(mode.zh(), Style::new().fg(pal().text)),
         ]));
     }
 
     lines.push(Line::from(vec![
-        Span::styled("  调参 ", Style::new().fg(DIM)),
+        Span::styled("  调参 ", Style::new().fg(pal().dim)),
         Span::styled(
             if app.tuning {
                 "持久化开启"
             } else {
                 "持久化关闭"
             },
-            Style::new().fg(if app.tuning { GOOD } else { WARN }),
+            Style::new().fg(if app.tuning { pal().good } else { pal().warn }),
         ),
     ]));
 
@@ -936,7 +1056,7 @@ fn draw_perf_summary(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let line = Line::from(vec![
-        Span::styled("  当前 ", Style::new().fg(DIM)),
+        Span::styled("  当前 ", Style::new().fg(pal().dim)),
         Span::styled(
             format!(" {} ", active.zh()),
             Style::new()
@@ -944,16 +1064,16 @@ fn draw_perf_summary(frame: &mut Frame, area: Rect, app: &App) {
                 .bg(profile_color(active))
                 .bold(),
         ),
-        Span::styled("   AC 默认 ", Style::new().fg(DIM)),
+        Span::styled("   AC 默认 ", Style::new().fg(pal().dim)),
         Span::styled(ac.zh(), Style::new().fg(profile_color(ac)).bold()),
-        Span::styled("   电池 ", Style::new().fg(DIM)),
+        Span::styled("   电池 ", Style::new().fg(pal().dim)),
         Span::styled(bat.zh(), Style::new().fg(profile_color(bat)).bold()),
-        Span::styled("   GPU ", Style::new().fg(DIM)),
-        Span::styled(gpu, Style::new().fg(TEXT)),
+        Span::styled("   GPU ", Style::new().fg(pal().dim)),
+        Span::styled(gpu, Style::new().fg(pal().text)),
         Span::styled("   ", Style::new()),
         Span::styled(
             tuning,
-            Style::new().fg(if app.tuning { GOOD } else { WARN }),
+            Style::new().fg(if app.tuning { pal().good } else { pal().warn }),
         ),
     ]);
     frame.render_widget(Paragraph::new(line), inner);
@@ -1005,20 +1125,20 @@ fn draw_profiles(frame: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(vec![
             Span::styled(format!(" {marker} "), style.fg(profile_color(*profile))),
             Span::styled(profile.zh().to_string(), style.fg(profile_color(*profile))),
-            Span::styled(badge, style.fg(DIM)),
+            Span::styled(badge, style.fg(pal().dim)),
         ]));
     }
 
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         " 默认模式（点击设置）",
-        Style::new().fg(DIM).bold(),
+        Style::new().fg(pal().dim).bold(),
     )));
 
     let ac = state.map(|s| s.ac).unwrap_or(Profile::Balanced);
     let bat = state.map(|s| s.battery).unwrap_or(Profile::Balanced);
-    let mut ac_spans = vec![Span::styled("   AC   ", Style::new().fg(DIM))];
-    let mut bat_spans = vec![Span::styled("   电池 ", Style::new().fg(DIM))];
+    let mut ac_spans = vec![Span::styled("   AC   ", Style::new().fg(pal().dim))];
+    let mut bat_spans = vec![Span::styled("   电池 ", Style::new().fg(pal().dim))];
     for profile in Profile::ALL.iter() {
         let style = if *profile == ac {
             Style::new()
@@ -1068,11 +1188,11 @@ fn draw_profiles(frame: &mut Frame, area: Rect, app: &App) {
 
     lines.push(Line::from(Span::styled(
         " Enter 切换   a AC 默认   b 电池默认",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
     lines.push(Line::from(Span::styled(
         " f 切换焦点到功耗",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
     let y = inner.y + lines.len() as u16;
     if let Some(line) = action_bar(
@@ -1120,19 +1240,19 @@ fn draw_gpu_picker(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(
                 format!(" {marker} {}", mode.zh()),
                 if selected {
-                    Style::new().bg(SURFACE).fg(ACCENT).bold()
+                    Style::new().bg(pal().surface).fg(pal().accent).bold()
                 } else if hovered {
-                    Style::new().bg(SURFACE_HOVER).fg(TEXT)
+                    Style::new().bg(pal().surface_hover).fg(pal().text)
                 } else {
-                    Style::new().fg(TEXT)
+                    Style::new().fg(pal().text)
                 },
             ),
-            Span::styled(badge, Style::new().fg(DIM)),
+            Span::styled(badge, Style::new().fg(pal().dim)),
         ]));
     }
     lines.push(Line::from(Span::styled(
         " g 选择   G 应用（需重启）",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
 
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
@@ -1162,11 +1282,11 @@ fn draw_presets(frame: &mut Frame, area: Rect, app: &App) {
         let hovered = app.hover == Some(MouseAction::PerfPreset(index));
         let marker = if selected { "▶" } else { " " };
         let style = if selected {
-            Style::new().bg(SURFACE).fg(ACCENT).bold()
+            Style::new().bg(pal().surface).fg(pal().accent).bold()
         } else if hovered {
-            Style::new().bg(SURFACE_HOVER).fg(TEXT)
+            Style::new().bg(pal().surface_hover).fg(pal().text)
         } else {
-            Style::new().fg(TEXT)
+            Style::new().fg(pal().text)
         };
         lines.push(Line::from(vec![
             Span::styled(format!(" {marker} {:<4}", preset.name), style),
@@ -1176,9 +1296,9 @@ fn draw_presets(frame: &mut Frame, area: Rect, app: &App) {
                     preset.pl1, preset.pl2, preset.pl3, preset.gpu_tgp, preset.gpu_temp
                 ),
                 if selected {
-                    Style::new().fg(TEXT)
+                    Style::new().fg(pal().text)
                 } else {
-                    Style::new().fg(DIM)
+                    Style::new().fg(pal().dim)
                 },
             ),
         ]));
@@ -1186,7 +1306,7 @@ fn draw_presets(frame: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         " [ ] 选择预设   p 套用",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
 
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
@@ -1217,7 +1337,7 @@ fn draw_power_fields(frame: &mut Frame, area: Rect, app: &App) {
                 .fg(Color::White)
                 .bold()
         } else {
-            Style::new().fg(TEXT)
+            Style::new().fg(pal().text)
         };
         let marker = if selected { "▶" } else { " " };
         let range = format!("[{}..{}]", field.min, field.max);
@@ -1225,20 +1345,20 @@ fn draw_power_fields(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(format!(" {marker} {:<16}", field.label), style),
             Span::styled(
                 format!("{:>4} {}", field.value, field.unit),
-                style.fg(if selected { ACCENT } else { TEXT }),
+                style.fg(if selected { pal().accent } else { pal().text }),
             ),
-            Span::styled(format!("  {range}"), Style::new().fg(DIM)),
+            Span::styled(format!("  {range}"), Style::new().fg(pal().dim)),
         ]));
     }
 
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         " h/l 调整（H/L 每次 5）   Enter/a 应用",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
     lines.push(Line::from(Span::styled(
         " 写入当前供电模式的 tuning，重启由 asusd 恢复",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
     let y = inner.y + lines.len() as u16;
     if let Some(line) = action_bar(
@@ -1301,13 +1421,13 @@ fn draw_battery_status(frame: &mut Frame, area: Rect, app: &App) {
     );
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("  状态  ", Style::new().fg(DIM)),
+            Span::styled("  状态  ", Style::new().fg(pal().dim)),
             Span::styled(
                 app.battery.status_zh(),
                 Style::new().fg(if app.battery.ac_online == Some(true) {
-                    GOOD
+                    pal().good
                 } else {
-                    WARN
+                    pal().warn
                 }),
             ),
             Span::styled(
@@ -1316,28 +1436,28 @@ fn draw_battery_status(frame: &mut Frame, area: Rect, app: &App) {
                     Some(false) => "   电池供电",
                     None => "",
                 },
-                Style::new().fg(DIM),
+                Style::new().fg(pal().dim),
             ),
         ])),
         rows[1],
     );
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("  功率  ", Style::new().fg(DIM)),
+            Span::styled("  功率  ", Style::new().fg(pal().dim)),
             Span::styled(
                 app.battery
                     .power_w
                     .map(|v| format!("{v:.1} W"))
                     .unwrap_or_else(|| "-".into()),
-                Style::new().fg(TEXT),
+                Style::new().fg(pal().text),
             ),
-            Span::styled("   电压  ", Style::new().fg(DIM)),
+            Span::styled("   电压  ", Style::new().fg(pal().dim)),
             Span::styled(
                 app.battery
                     .voltage_v
                     .map(|v| format!("{v:.2} V"))
                     .unwrap_or_else(|| "-".into()),
-                Style::new().fg(TEXT),
+                Style::new().fg(pal().text),
             ),
         ])),
         rows[2],
@@ -1348,11 +1468,11 @@ fn draw_battery_status(frame: &mut Frame, area: Rect, app: &App) {
         section("使用建议"),
         Line::from(Span::styled(
             "  长期插电建议上限 60–80%",
-            Style::new().fg(TEXT),
+            Style::new().fg(pal().text),
         )),
         Line::from(Span::styled(
             "  高温会加速电池老化，注意散热",
-            Style::new().fg(TEXT),
+            Style::new().fg(pal().text),
         )),
     ];
     frame.render_widget(Paragraph::new(Text::from(lines)), rows[4]);
@@ -1366,15 +1486,19 @@ fn draw_battery_health(frame: &mut Frame, area: Rect, app: &App) {
 
     let health = app.battery.health_pct().unwrap_or(0.0);
     lines.push(Line::from(vec![
-        Span::styled("  健康度  ", Style::new().fg(DIM)),
+        Span::styled("  健康度  ", Style::new().fg(pal().dim)),
         Span::styled(
             bar_text(health as f64 / 100.0, 16),
-            Style::new().fg(if health >= 80.0 { GOOD } else { WARN }),
+            Style::new().fg(if health >= 80.0 {
+                pal().good
+            } else {
+                pal().warn
+            }),
         ),
-        Span::styled(format!("  {health:.1}%"), Style::new().fg(TEXT)),
+        Span::styled(format!("  {health:.1}%"), Style::new().fg(pal().text)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("  容量  ", Style::new().fg(DIM)),
+        Span::styled("  容量  ", Style::new().fg(pal().dim)),
         Span::styled(
             if let (Some(full), Some(design)) = (
                 app.battery.energy_full_wh,
@@ -1384,41 +1508,41 @@ fn draw_battery_health(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 "-".into()
             },
-            Style::new().fg(TEXT),
+            Style::new().fg(pal().text),
         ),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("  循环  ", Style::new().fg(DIM)),
+        Span::styled("  循环  ", Style::new().fg(pal().dim)),
         Span::styled(
             app.battery
                 .cycle_count
                 .map(|v| format!("{v} 次"))
                 .unwrap_or_else(|| "-".into()),
-            Style::new().fg(TEXT),
+            Style::new().fg(pal().text),
         ),
     ]));
     if !app.battery.manufacturer.is_empty() {
         lines.push(Line::from(vec![
-            Span::styled("  厂商  ", Style::new().fg(DIM)),
+            Span::styled("  厂商  ", Style::new().fg(pal().dim)),
             Span::styled(
                 util::truncate(&app.battery.manufacturer, 30),
-                Style::new().fg(TEXT),
+                Style::new().fg(pal().text),
             ),
         ]));
     }
     if !app.battery.model.is_empty() {
         lines.push(Line::from(vec![
-            Span::styled("  型号  ", Style::new().fg(DIM)),
+            Span::styled("  型号  ", Style::new().fg(pal().dim)),
             Span::styled(
                 util::truncate(&app.battery.model, 30),
-                Style::new().fg(TEXT),
+                Style::new().fg(pal().text),
             ),
         ]));
     }
     if !app.battery.technology.is_empty() {
         lines.push(Line::from(vec![
-            Span::styled("  技术  ", Style::new().fg(DIM)),
-            Span::styled(app.battery.technology.clone(), Style::new().fg(DIM)),
+            Span::styled("  技术  ", Style::new().fg(pal().dim)),
+            Span::styled(app.battery.technology.clone(), Style::new().fg(pal().dim)),
         ]));
     }
 
@@ -1447,12 +1571,20 @@ fn draw_battery_limit(frame: &mut Frame, area: Rect, app: &App) {
                     app.limit_edit as f64 / 100.0,
                     inner.width.saturating_sub(10) as usize,
                 ),
-                Style::new().fg(if app.limit_dirty { WARN } else { GOOD }),
+                Style::new().fg(if app.limit_dirty {
+                    pal().warn
+                } else {
+                    pal().good
+                }),
             ),
             Span::styled(
                 format!("  {}%", app.limit_edit),
                 Style::new()
-                    .fg(if app.limit_dirty { WARN } else { GOOD })
+                    .fg(if app.limit_dirty {
+                        pal().warn
+                    } else {
+                        pal().good
+                    })
                     .bold(),
             ),
         ])),
@@ -1460,13 +1592,13 @@ fn draw_battery_limit(frame: &mut Frame, area: Rect, app: &App) {
     );
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("  当前上限  ", Style::new().fg(DIM)),
+            Span::styled("  当前上限  ", Style::new().fg(pal().dim)),
             Span::styled(
                 app.battery
                     .limit
                     .map(|v| format!("{v}%"))
                     .unwrap_or_else(|| "-".into()),
-                Style::new().fg(TEXT),
+                Style::new().fg(pal().text),
             ),
             Span::styled(
                 if app.limit_dirty {
@@ -1474,7 +1606,7 @@ fn draw_battery_limit(frame: &mut Frame, area: Rect, app: &App) {
                 } else {
                     "   h/l 调整   Enter 应用"
                 },
-                Style::new().fg(DIM),
+                Style::new().fg(pal().dim),
             ),
         ])),
         rows[1],
@@ -1482,7 +1614,7 @@ fn draw_battery_limit(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "  o 单次充满（忽略上限）   长期插电建议 60-80%",
-            Style::new().fg(DIM),
+            Style::new().fg(pal().dim),
         ))),
         rows[2],
     );
@@ -1541,8 +1673,8 @@ fn draw_fan(frame: &mut Frame, area: Rect, app: &App) {
 fn draw_fan_graph(frame: &mut Frame, area: Rect, app: &App) {
     use ratatui::widgets::canvas::{Canvas, Line as CanvasLine, Points};
 
-    let cpu_color = Color::Rgb(90, 210, 230);
-    let gpu_color = Color::Rgb(220, 130, 240);
+    let cpu_color = pal().accent;
+    let gpu_color = pal().chart;
     let grid = Color::Rgb(55, 62, 72);
 
     type FanPlot = (String, Vec<(u8, u8)>, Color, bool);
@@ -1578,10 +1710,10 @@ fn draw_fan_graph(frame: &mut Frame, area: Rect, app: &App) {
         .collect();
 
     let title = Line::from(vec![
-        Span::styled(" 风扇曲线 ", Style::new().fg(ACCENT).bold()),
+        Span::styled(" 风扇曲线 ", Style::new().fg(pal().accent).bold()),
         Span::styled("CPU ", Style::new().fg(cpu_color)),
         Span::styled("GPU ", Style::new().fg(gpu_color)),
-        Span::styled(" 横轴温度 / 纵轴 PWM", Style::new().fg(DIM)),
+        Span::styled(" 横轴温度 / 纵轴 PWM", Style::new().fg(pal().dim)),
     ]);
 
     let canvas = Canvas::default()
@@ -1643,9 +1775,9 @@ fn draw_fan_detail(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines = Vec::new();
     for curve in &app.fan_curves {
         let color = if curve.fan.eq_ignore_ascii_case("cpu") {
-            Color::Rgb(90, 210, 230)
+            pal().accent
         } else {
-            Color::Rgb(220, 130, 240)
+            pal().chart
         };
         lines.push(Line::from(vec![
             Span::styled(
@@ -1654,7 +1786,7 @@ fn draw_fan_detail(frame: &mut Frame, area: Rect, app: &App) {
             ),
             Span::styled(
                 if curve.enabled { "启用" } else { "停用" },
-                Style::new().fg(if curve.enabled { GOOD } else { BAD }),
+                Style::new().fg(if curve.enabled { pal().good } else { pal().bad }),
             ),
         ]));
         let temps: Vec<String> = curve.temp.iter().map(|temp| format!("{temp:>4}")).collect();
@@ -1665,27 +1797,27 @@ fn draw_fan_detail(frame: &mut Frame, area: Rect, app: &App) {
             .map(|pwm| format!("{:>3}%", *pwm as u32 * 100 / 255))
             .collect();
         lines.push(Line::from(vec![
-            Span::styled("     温度 ", Style::new().fg(DIM)),
-            Span::styled(temps.join(" "), Style::new().fg(TEXT)),
+            Span::styled("     温度 ", Style::new().fg(pal().dim)),
+            Span::styled(temps.join(" "), Style::new().fg(pal().text)),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("     PWM  ", Style::new().fg(DIM)),
-            Span::styled(pwms.join(" "), Style::new().fg(TEXT)),
+            Span::styled("     PWM  ", Style::new().fg(pal().dim)),
+            Span::styled(pwms.join(" "), Style::new().fg(pal().text)),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("     占空 ", Style::new().fg(DIM)),
-            Span::styled(percent.join(" "), Style::new().fg(Color::Rgb(90, 200, 220))),
+            Span::styled("     占空 ", Style::new().fg(pal().dim)),
+            Span::styled(percent.join(" "), Style::new().fg(pal().accent)),
         ]));
         lines.push(Line::raw(""));
     }
 
     lines.push(Line::from(Span::styled(
         " i 编辑 CPU   I 编辑 GPU   e 启用/停用",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
     lines.push(Line::from(Span::styled(
         " d 恢复固件默认   s 保存当前为预设",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
     let y = inner.y + lines.len() as u16;
     if let Some(line) = action_bar(
@@ -1744,7 +1876,8 @@ fn draw_fan_editor(frame: &mut Frame, area: Rect, app: &App, edit: &crate::app::
         );
         let selected = index == edit.sel;
         let hovered = app.hover == Some(MouseAction::FanPoint(index));
-        let style = row_style(selected, hovered).fg(if selected { Color::White } else { TEXT });
+        let style =
+            row_style(selected, hovered).fg(if selected { Color::White } else { pal().text });
         let marker = if selected { "▶" } else { " " };
         lines.push(Line::from(vec![
             Span::styled(format!(" {marker} 点{}  ", index + 1), style),
@@ -1752,7 +1885,7 @@ fn draw_fan_editor(frame: &mut Frame, area: Rect, app: &App, edit: &crate::app::
             Span::styled(format!("  PWM {:>3}", edit.pwm[index]), style),
             Span::styled(
                 format!("  {:>3}%", edit.percent(index)),
-                style.fg(if selected { ACCENT } else { DIM }),
+                style.fg(if selected { pal().accent } else { pal().dim }),
             ),
         ]));
     }
@@ -1765,11 +1898,11 @@ fn draw_fan_editor(frame: &mut Frame, area: Rect, app: &App, edit: &crate::app::
         Paragraph::new(Text::from(vec![
             Line::from(Span::styled(
                 " j/k 选点   h/l PWM ±1   H/L ±10   [ ] 温度 ±1",
-                Style::new().fg(DIM),
+                Style::new().fg(pal().dim),
             )),
             Line::from(Span::styled(
                 " c 切 CPU/GPU   a 写入   Esc 取消",
-                Style::new().fg(DIM),
+                Style::new().fg(pal().dim),
             )),
         ])),
         rows[1],
@@ -1785,12 +1918,12 @@ fn draw_fan_presets(frame: &mut Frame, area: Rect, app: &App) {
     if app.cfg.fan_presets.is_empty() {
         lines.push(Line::from(Span::styled(
             "  还没有预设",
-            Style::new().fg(DIM),
+            Style::new().fg(pal().dim),
         )));
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
             "  按 s 把当前已写入的曲线保存为预设",
-            Style::new().fg(DIM),
+            Style::new().fg(pal().dim),
         )));
     } else {
         for (index, preset) in app.cfg.fan_presets.iter().enumerate() {
@@ -1806,20 +1939,23 @@ fn draw_fan_presets(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled(
                     format!(" {marker} {}", preset.name),
                     if selected {
-                        Style::new().bg(SURFACE).fg(ACCENT).bold()
+                        Style::new().bg(pal().surface).fg(pal().accent).bold()
                     } else if hovered {
-                        Style::new().bg(SURFACE_HOVER).fg(TEXT)
+                        Style::new().bg(pal().surface_hover).fg(pal().text)
                     } else {
-                        Style::new().fg(TEXT)
+                        Style::new().fg(pal().text)
                     },
                 ),
-                Span::styled(format!("  [{}]", preset.profile.zh()), Style::new().fg(DIM)),
+                Span::styled(
+                    format!("  [{}]", preset.profile.zh()),
+                    Style::new().fg(pal().dim),
+                ),
             ]));
         }
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
             " p 应用   x 删除   s 覆盖保存",
-            Style::new().fg(DIM),
+            Style::new().fg(pal().dim),
         )));
     }
 
@@ -1876,19 +2012,19 @@ fn draw_lighting_status(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines = Vec::new();
     if let Some(aura) = &app.aura {
         lines.push(Line::from(vec![
-            Span::styled("  模式  ", Style::new().fg(DIM)),
+            Span::styled("  模式  ", Style::new().fg(pal().dim)),
             Span::styled(
                 format!("{}（{}）", aura.mode_name, aura.mode_zh),
-                Style::new().fg(ACCENT).bold(),
+                Style::new().fg(pal().accent).bold(),
             ),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("  亮度  ", Style::new().fg(DIM)),
-            Span::styled(aura.brightness_name.clone(), Style::new().fg(GOOD)),
+            Span::styled("  亮度  ", Style::new().fg(pal().dim)),
+            Span::styled(aura.brightness_name.clone(), Style::new().fg(pal().good)),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("  颜色  ", Style::new().fg(DIM)),
-            Span::styled(format!("{} ", aura.color1), Style::new().fg(TEXT)),
+            Span::styled("  颜色  ", Style::new().fg(pal().dim)),
+            Span::styled(format!("{} ", aura.color1), Style::new().fg(pal().text)),
             Span::styled(
                 "████",
                 Style::new().fg(hex_color(aura.color1.trim_start_matches('#'))),
@@ -1896,8 +2032,8 @@ fn draw_lighting_status(frame: &mut Frame, area: Rect, app: &App) {
         ]));
         if aura.color2 != "#000000" {
             lines.push(Line::from(vec![
-                Span::styled("  副色  ", Style::new().fg(DIM)),
-                Span::styled(format!("{} ", aura.color2), Style::new().fg(TEXT)),
+                Span::styled("  副色  ", Style::new().fg(pal().dim)),
+                Span::styled(format!("{} ", aura.color2), Style::new().fg(pal().text)),
                 Span::styled(
                     "████",
                     Style::new().fg(hex_color(aura.color2.trim_start_matches('#'))),
@@ -1906,30 +2042,33 @@ fn draw_lighting_status(frame: &mut Frame, area: Rect, app: &App) {
         }
         if !aura.speed.is_empty() {
             lines.push(Line::from(vec![
-                Span::styled("  速度  ", Style::new().fg(DIM)),
-                Span::styled(aura.speed.clone(), Style::new().fg(TEXT)),
+                Span::styled("  速度  ", Style::new().fg(pal().dim)),
+                Span::styled(aura.speed.clone(), Style::new().fg(pal().text)),
             ]));
         }
         if !aura.zone.is_empty() {
             lines.push(Line::from(vec![
-                Span::styled("  区域  ", Style::new().fg(DIM)),
-                Span::styled(aura.zone.clone(), Style::new().fg(TEXT)),
+                Span::styled("  区域  ", Style::new().fg(pal().dim)),
+                Span::styled(aura.zone.clone(), Style::new().fg(pal().text)),
             ]));
         }
     } else {
         lines.push(Line::from(vec![
-            Span::styled("  当前亮度  ", Style::new().fg(DIM)),
-            Span::styled(app.led.clone(), Style::new().fg(ACCENT).bold()),
+            Span::styled("  当前亮度  ", Style::new().fg(pal().dim)),
+            Span::styled(app.led.clone(), Style::new().fg(pal().accent).bold()),
         ]));
         lines.push(Line::from(Span::styled(
             "  无法读取 Aura 状态，键盘可能只支持亮度。",
-            Style::new().fg(WARN),
+            Style::new().fg(pal().warn),
         )));
     }
 
     if let Some(aura) = &app.aura {
         lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled("  颜色预览", Style::new().fg(DIM))));
+        lines.push(Line::from(Span::styled(
+            "  颜色预览",
+            Style::new().fg(pal().dim),
+        )));
         lines.push(gradient_line(
             inner.width.saturating_sub(2) as usize,
             &aura.color1,
@@ -1943,7 +2082,7 @@ fn draw_lighting_status(frame: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         "  b 亮度   e/E 灯效   c 选色   S 应用静态色",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
     let y = inner.y + lines.len() as u16;
     if let Some(line) = action_bar(
@@ -2001,20 +2140,20 @@ fn draw_lighting_colors(frame: &mut Frame, area: Rect, app: &App) {
         row.push(Span::styled(
             format!(" {} ", if selected { "▶" } else { " " }),
             if selected {
-                Style::new().bg(SURFACE).fg(ACCENT)
+                Style::new().bg(pal().surface).fg(pal().accent)
             } else if hovered {
-                Style::new().bg(SURFACE_HOVER).fg(DIM)
+                Style::new().bg(pal().surface_hover).fg(pal().dim)
             } else {
-                Style::new().fg(DIM)
+                Style::new().fg(pal().dim)
             },
         ));
         row.push(Span::styled("██ ", Style::new().fg(hex_color(hex))));
         row.push(Span::styled(
             format!("{:<4}", name),
             if selected {
-                Style::new().fg(ACCENT).bold()
+                Style::new().fg(pal().accent).bold()
             } else {
-                Style::new().fg(TEXT)
+                Style::new().fg(pal().text)
             },
         ));
         if row.len() >= 9 {
@@ -2028,8 +2167,8 @@ fn draw_lighting_colors(frame: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::raw(""));
     if let Some(aura) = &app.aura {
         lines.push(Line::from(vec![
-            Span::styled("  当前颜色  ", Style::new().fg(DIM)),
-            Span::styled(format!("{} ", aura.color1), Style::new().fg(TEXT)),
+            Span::styled("  当前颜色  ", Style::new().fg(pal().dim)),
+            Span::styled(format!("{} ", aura.color1), Style::new().fg(pal().text)),
             Span::styled(
                 "████████",
                 Style::new().fg(hex_color(aura.color1.trim_start_matches('#'))),
@@ -2039,11 +2178,11 @@ fn draw_lighting_colors(frame: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         "  c 切换选中颜色   S 应用为静态色",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
     lines.push(Line::from(Span::styled(
         "  静态色只在 Static 灯效下生效",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
 
     frame.render_widget(
@@ -2077,22 +2216,22 @@ fn draw_lighting_modes(frame: &mut Frame, area: Rect, app: &App) {
             let active = current == Some(*mode);
             spans.push(Span::styled(
                 format!(" {} ", if active { "▶" } else { " " }),
-                Style::new().fg(if active { ACCENT } else { DIM }),
+                Style::new().fg(if active { pal().accent } else { pal().dim }),
             ));
             spans.push(Span::styled(
                 format!("{:<13}", asus::aura_mode_name(*mode)),
                 if active {
-                    Style::new().fg(ACCENT).bold()
+                    Style::new().fg(pal().accent).bold()
                 } else {
-                    Style::new().fg(TEXT)
+                    Style::new().fg(pal().text)
                 },
             ));
             spans.push(Span::styled(
                 format!("{:<7}", asus::aura_mode_zh(*mode)),
                 if active {
-                    Style::new().fg(ACCENT)
+                    Style::new().fg(pal().accent)
                 } else {
-                    Style::new().fg(DIM)
+                    Style::new().fg(pal().dim)
                 },
             ));
         }
@@ -2102,11 +2241,11 @@ fn draw_lighting_modes(frame: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         "  e 下一个   E 上一个",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
     lines.push(Line::from(Span::styled(
         "  灯效由键盘固件决定，部分模式不支持颜色/速度调节",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
 
     frame.render_widget(
@@ -2129,36 +2268,39 @@ fn draw_lighting_notes(frame: &mut Frame, area: Rect, app: &App) {
                     .as_ref()
                     .map(|a| format!("{}（{}）", a.mode_name, a.mode_zh))
                     .unwrap_or_else(|| "不可用".into()),
-                Style::new().fg(ACCENT),
+                Style::new().fg(pal().accent),
             ),
         ]),
         Line::raw(""),
         section("快捷键"),
         Line::from(Span::styled(
             "  e / E   下一个 / 上一个",
-            Style::new().fg(TEXT),
+            Style::new().fg(pal().text),
         )),
         Line::from(Span::styled(
             "  c       切换静态颜色",
-            Style::new().fg(TEXT),
+            Style::new().fg(pal().text),
         )),
-        Line::from(Span::styled("  S       应用静态色", Style::new().fg(TEXT))),
+        Line::from(Span::styled(
+            "  S       应用静态色",
+            Style::new().fg(pal().text),
+        )),
         Line::raw(""),
         Line::from(Span::styled(
             "  静态色只在 Static 下生效",
-            Style::new().fg(DIM),
+            Style::new().fg(pal().dim),
         )),
         Line::from(Span::styled(
             "  部分灯效由固件控制，颜色/速度",
-            Style::new().fg(DIM),
+            Style::new().fg(pal().dim),
         )),
-        Line::from(Span::styled("  可能被忽略", Style::new().fg(DIM))),
+        Line::from(Span::styled("  可能被忽略", Style::new().fg(pal().dim))),
     ];
     if let Some(aura) = &app.aura {
         lines.push(Line::raw(""));
         lines.push(Line::from(vec![
-            Span::styled("  当前颜色  ", Style::new().fg(DIM)),
-            Span::styled(format!("{} ", aura.color1), Style::new().fg(TEXT)),
+            Span::styled("  当前颜色  ", Style::new().fg(pal().dim)),
+            Span::styled(format!("{} ", aura.color1), Style::new().fg(pal().text)),
             Span::styled(
                 "████",
                 Style::new().fg(hex_color(aura.color1.trim_start_matches('#'))),
@@ -2179,7 +2321,7 @@ fn draw_network(frame: &mut Frame, area: Rect, app: &App) {
 
     let rows = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(inner);
     let header = Line::from(vec![
-        Span::styled(" Wi-Fi ", Style::new().fg(DIM)),
+        Span::styled(" Wi-Fi ", Style::new().fg(pal().dim)),
         Span::styled(
             match app.wifi_enabled {
                 Some(true) => "已启用",
@@ -2187,23 +2329,23 @@ fn draw_network(frame: &mut Frame, area: Rect, app: &App) {
                 None => "未知",
             },
             Style::new().fg(if app.wifi_enabled == Some(true) {
-                GOOD
+                pal().good
             } else {
-                WARN
+                pal().warn
             }),
         ),
-        Span::styled("   SSID ", Style::new().fg(DIM)),
+        Span::styled("   SSID ", Style::new().fg(pal().dim)),
         Span::styled(
             app.ssid.clone().unwrap_or_else(|| "-".into()),
-            Style::new().fg(TEXT),
+            Style::new().fg(pal().text),
         ),
         if nm::hotspot_active() {
-            Span::styled("   热点已开启", Style::new().fg(WARN))
+            Span::styled("   热点已开启", Style::new().fg(pal().warn))
         } else {
             Span::raw("")
         },
         if app.net_loading {
-            Span::styled("   刷新中…", Style::new().fg(WARN))
+            Span::styled("   刷新中…", Style::new().fg(pal().warn))
         } else {
             Span::raw("")
         },
@@ -2224,9 +2366,9 @@ fn draw_net_list(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(
                 format!(" {} ", view.zh()),
                 if *view == app.net_view {
-                    Style::new().fg(Color::Black).bg(ACCENT).bold()
+                    Style::new().fg(Color::Black).bg(pal().accent).bold()
                 } else {
-                    Style::new().fg(DIM)
+                    Style::new().fg(pal().dim)
                 },
             )
         })
@@ -2251,7 +2393,7 @@ fn draw_net_list(frame: &mut Frame, area: Rect, app: &App) {
                 let hovered = app.hover == Some(MouseAction::Net(index));
                 let marker = if selected { "▶" } else { " " };
                 let active = if conn.active {
-                    Span::styled(" [已连接]", Style::new().fg(GOOD))
+                    Span::styled(" [已连接]", Style::new().fg(pal().good))
                 } else {
                     Span::raw("")
                 };
@@ -2259,16 +2401,16 @@ fn draw_net_list(frame: &mut Frame, area: Rect, app: &App) {
                     Span::styled(
                         format!(" {marker} {}", util::truncate(&conn.name, 20)),
                         if selected {
-                            Style::new().bg(SURFACE).fg(ACCENT).bold()
+                            Style::new().bg(pal().surface).fg(pal().accent).bold()
                         } else if hovered {
-                            Style::new().bg(SURFACE_HOVER).fg(TEXT)
+                            Style::new().bg(pal().surface_hover).fg(pal().text)
                         } else {
-                            Style::new().fg(TEXT)
+                            Style::new().fg(pal().text)
                         },
                     ),
                     Span::styled(
                         format!("  {}", util::truncate(short_kind(&conn.kind), 14)),
-                        Style::new().fg(DIM),
+                        Style::new().fg(pal().dim),
                     ),
                     active,
                 ]));
@@ -2286,7 +2428,7 @@ fn draw_net_list(frame: &mut Frame, area: Rect, app: &App) {
                 let marker = if selected { "▶" } else { " " };
                 let bars = signal_bar(ap.signal);
                 let in_use = if ap.in_use {
-                    Span::styled(" [已连接]", Style::new().fg(GOOD))
+                    Span::styled(" [已连接]", Style::new().fg(pal().good))
                 } else {
                     Span::raw("")
                 };
@@ -2294,11 +2436,11 @@ fn draw_net_list(frame: &mut Frame, area: Rect, app: &App) {
                     Span::styled(
                         format!(" {marker} {}", util::truncate(&ap.ssid, 24)),
                         if selected {
-                            Style::new().bg(SURFACE).fg(ACCENT).bold()
+                            Style::new().bg(pal().surface).fg(pal().accent).bold()
                         } else if hovered {
-                            Style::new().bg(SURFACE_HOVER).fg(TEXT)
+                            Style::new().bg(pal().surface_hover).fg(pal().text)
                         } else {
-                            Style::new().fg(TEXT)
+                            Style::new().fg(pal().text)
                         },
                     ),
                     Span::styled(
@@ -2307,7 +2449,7 @@ fn draw_net_list(frame: &mut Frame, area: Rect, app: &App) {
                     ),
                     Span::styled(
                         format!("  {}", util::truncate(&ap.security, 12)),
-                        Style::new().fg(DIM),
+                        Style::new().fg(pal().dim),
                     ),
                     in_use,
                 ]));
@@ -2324,19 +2466,19 @@ fn draw_net_list(frame: &mut Frame, area: Rect, app: &App) {
                 let hovered = app.hover == Some(MouseAction::Net(index));
                 let marker = if selected { "▶" } else { " " };
                 let active = if vpn.active {
-                    Span::styled(" [已连接]", Style::new().fg(GOOD))
+                    Span::styled(" [已连接]", Style::new().fg(pal().good))
                 } else {
-                    Span::styled(" [未连接]", Style::new().fg(DIM))
+                    Span::styled(" [未连接]", Style::new().fg(pal().dim))
                 };
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!(" {marker} {}", util::truncate(&vpn.name, 26)),
                         if selected {
-                            Style::new().bg(SURFACE).fg(ACCENT).bold()
+                            Style::new().bg(pal().surface).fg(pal().accent).bold()
                         } else if hovered {
-                            Style::new().bg(SURFACE_HOVER).fg(TEXT)
+                            Style::new().bg(pal().surface_hover).fg(pal().text)
                         } else {
-                            Style::new().fg(TEXT)
+                            Style::new().fg(pal().text)
                         },
                     ),
                     active,
@@ -2348,7 +2490,7 @@ fn draw_net_list(frame: &mut Frame, area: Rect, app: &App) {
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
             "  没有条目，按 s 扫描或检查 NetworkManager",
-            Style::new().fg(DIM),
+            Style::new().fg(pal().dim),
         )));
     }
 
@@ -2442,15 +2584,15 @@ fn draw_net_details(frame: &mut Frame, area: Rect, app: &App) {
                 lines.push(section("操作"));
                 lines.push(Line::from(Span::styled(
                     " Enter 编辑 IPv4 / DNS",
-                    Style::new().fg(DIM),
+                    Style::new().fg(pal().dim),
                 )));
                 lines.push(Line::from(Span::styled(
                     " u 激活   d 断开   x 删除",
-                    Style::new().fg(DIM),
+                    Style::new().fg(pal().dim),
                 )));
                 lines.push(Line::from(Span::styled(
                     " p Ping   n DNS 查询   c 缓存",
-                    Style::new().fg(DIM),
+                    Style::new().fg(pal().dim),
                 )));
             }
         }
@@ -2478,11 +2620,11 @@ fn draw_net_details(frame: &mut Frame, area: Rect, app: &App) {
                 lines.push(section("操作"));
                 lines.push(Line::from(Span::styled(
                     " Enter 连接（密码写入 NM keyfile）",
-                    Style::new().fg(DIM),
+                    Style::new().fg(pal().dim),
                 )));
                 lines.push(Line::from(Span::styled(
                     " s 重新扫描   p Ping   n DNS 查询   c 缓存",
-                    Style::new().fg(DIM),
+                    Style::new().fg(pal().dim),
                 )));
             }
         }
@@ -2498,12 +2640,12 @@ fn draw_net_details(frame: &mut Frame, area: Rect, app: &App) {
                 lines.push(section("操作"));
                 lines.push(Line::from(Span::styled(
                     " Enter/u 连接   d 断开",
-                    Style::new().fg(DIM),
+                    Style::new().fg(pal().dim),
                 )));
             } else {
                 lines.push(Line::from(Span::styled(
                     " 没有 VPN 连接",
-                    Style::new().fg(DIM),
+                    Style::new().fg(pal().dim),
                 )));
             }
         }
@@ -2512,7 +2654,7 @@ fn draw_net_details(frame: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         " v 视图   o 无线   t 热点",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
 
     let bar_y = inner.y + lines.len() as u16;
@@ -2555,13 +2697,13 @@ fn draw_ip_form(frame: &mut Frame, area: Rect, form: &IpForm) {
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .title(Line::from(vec![
-            Span::styled("▍", Style::new().fg(ACCENT)),
+            Span::styled("▍", Style::new().fg(pal().accent)),
             Span::styled(
                 format!(" 编辑 IPv4 · {} ", form.conn),
-                Style::new().fg(TEXT).bold(),
+                Style::new().fg(pal().text).bold(),
             ),
         ]))
-        .border_style(Style::new().fg(ACCENT));
+        .border_style(Style::new().fg(pal().accent));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
@@ -2577,7 +2719,7 @@ fn draw_ip_form(frame: &mut Frame, area: Rect, form: &IpForm) {
                 .fg(Color::White)
                 .bold()
         } else {
-            Style::new().fg(TEXT)
+            Style::new().fg(pal().text)
         };
 
         let mut value = form.value(index);
@@ -2596,13 +2738,13 @@ fn draw_ip_form(frame: &mut Frame, area: Rect, form: &IpForm) {
             Span::styled(format!(" {marker} {:<10}", label), style),
             Span::styled(
                 format!("  {value}"),
-                style.fg(if selected { ACCENT } else { TEXT }),
+                style.fg(if selected { pal().accent } else { pal().text }),
             ),
         ]));
         if form.method == "auto" && (1..=3).contains(&index) {
             lines.push(Line::from(Span::styled(
                 "              切换到手动后可编辑",
-                Style::new().fg(DIM),
+                Style::new().fg(pal().dim),
             )));
         }
     }
@@ -2615,11 +2757,11 @@ fn draw_ip_form(frame: &mut Frame, area: Rect, form: &IpForm) {
         Paragraph::new(Text::from(vec![
             Line::from(Span::styled(
                 " j/k 选择   Enter 切换/下一项   直接输入编辑   Backspace 删除",
-                Style::new().fg(DIM),
+                Style::new().fg(pal().dim),
             )),
             Line::from(Span::styled(
                 " a 应用   Esc 取消   Ctrl+U 清空当前项",
-                Style::new().fg(DIM),
+                Style::new().fg(pal().dim),
             )),
         ])),
         rows[1],
@@ -2644,9 +2786,9 @@ fn action_bar(
         }
         record_mouse(app, Rect::new(x, y, width + 3, 1), *action);
         let style = if app.hover == Some(*action) {
-            Style::new().fg(Color::Black).bg(ACCENT).bold()
+            Style::new().fg(Color::Black).bg(pal().accent).bold()
         } else {
-            Style::new().fg(ACCENT).bg(SURFACE)
+            Style::new().fg(pal().accent).bg(pal().surface)
         };
         spans.push(Span::styled(format!(" {label} "), style));
         spans.push(Span::raw(" "));
@@ -2657,9 +2799,9 @@ fn action_bar(
 
 fn row_style(selected: bool, hovered: bool) -> Style {
     if selected {
-        Style::new().bg(SELECTED).fg(Color::White).bold()
+        Style::new().bg(pal().selected).fg(Color::White).bold()
     } else if hovered {
-        Style::new().bg(SURFACE_HOVER).fg(TEXT)
+        Style::new().bg(pal().surface_hover).fg(pal().text)
     } else {
         Style::new()
     }
@@ -2673,15 +2815,15 @@ fn record_mouse(app: &App, rect: Rect, action: MouseAction) {
 
 fn section(title: &'static str) -> Line<'static> {
     Line::from(vec![
-        Span::styled("  ▍ ", Style::new().fg(ACCENT)),
+        Span::styled("  ▍ ", Style::new().fg(pal().accent)),
         Span::styled(title, Style::new().fg(Color::White).bold()),
     ])
 }
 
 fn detail(label: &'static str, value: String) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("  {label:<6}"), Style::new().fg(DIM)),
-        Span::styled(util::truncate(&value, 34), Style::new().fg(TEXT)),
+        Span::styled(format!("  {label:<6}"), Style::new().fg(pal().dim)),
+        Span::styled(util::truncate(&value, 34), Style::new().fg(pal().text)),
     ])
 }
 
@@ -2706,11 +2848,11 @@ fn signal_bar(signal: u8) -> String {
 
 fn signal_color(signal: u8) -> Color {
     if signal >= 70 {
-        GOOD
+        pal().good
     } else if signal >= 40 {
-        WARN
+        pal().warn
     } else {
-        BAD
+        pal().bad
     }
 }
 
@@ -2742,26 +2884,26 @@ fn draw_services(frame: &mut Frame, area: Rect, app: &App) {
         let hovered = app.hover == Some(MouseAction::Service(index));
         let marker = if selected { "▶" } else { " " };
         let active_color = match info.active.as_str() {
-            "active" => GOOD,
-            "failed" => BAD,
-            "activating" | "reloading" => WARN,
-            _ => DIM,
+            "active" => pal().good,
+            "failed" => pal().bad,
+            "activating" | "reloading" => pal().warn,
+            _ => pal().dim,
         };
         let enabled_color = match info.enabled.as_str() {
-            "enabled" => GOOD,
-            "static" => WARN,
-            "masked" => BAD,
-            _ => DIM,
+            "enabled" => pal().good,
+            "static" => pal().warn,
+            "masked" => pal().bad,
+            _ => pal().dim,
         };
         lines.push(Line::from(vec![
             Span::styled(
                 format!(" {marker} {:<24}", util::truncate(info.display_name(), 24)),
                 if selected {
-                    Style::new().bg(SURFACE).fg(ACCENT).bold()
+                    Style::new().bg(pal().surface).fg(pal().accent).bold()
                 } else if hovered {
-                    Style::new().bg(SURFACE_HOVER).fg(TEXT)
+                    Style::new().bg(pal().surface_hover).fg(pal().text)
                 } else {
-                    Style::new().fg(TEXT)
+                    Style::new().fg(pal().text)
                 },
             ),
             Span::styled(
@@ -2778,11 +2920,11 @@ fn draw_services(frame: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         " s 启动   t 停止   R 重启",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
     lines.push(Line::from(Span::styled(
         " e 启用自启   d 禁用自启   E 启用并启动   D 禁用并停止",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
     let y = inner.y + lines.len() as u16;
     if let Some(line) = action_bar(
@@ -2833,34 +2975,37 @@ fn draw_services(frame: &mut Frame, area: Rect, app: &App) {
         details.push(Line::raw(""));
         details.push(Line::from(Span::styled(
             " s 启动   t 停止   R 重启",
-            Style::new().fg(DIM),
+            Style::new().fg(pal().dim),
         )));
         details.push(Line::from(Span::styled(
             " e 启用自启   d 禁用自启",
-            Style::new().fg(DIM),
+            Style::new().fg(pal().dim),
         )));
         details.push(Line::from(Span::styled(
             " E 启用并立即启动   D 禁用并停止",
-            Style::new().fg(DIM),
+            Style::new().fg(pal().dim),
         )));
         details.push(Line::raw(""));
         details.push(Line::from(Span::styled(
             " 停止或重启 NetworkManager 会断网；",
-            Style::new().fg(WARN),
+            Style::new().fg(pal().warn),
         )));
         details.push(Line::from(Span::styled(
             " 停止 asusd 会失去 ASUS 硬件控制。",
-            Style::new().fg(WARN),
+            Style::new().fg(pal().warn),
         )));
         if info.load == "not-found" {
             details.push(Line::raw(""));
             details.push(Line::from(Span::styled(
                 " 该服务不存在",
-                Style::new().fg(BAD),
+                Style::new().fg(pal().bad),
             )));
         }
     } else {
-        details.push(Line::from(Span::styled(" 没有服务", Style::new().fg(DIM))));
+        details.push(Line::from(Span::styled(
+            " 没有服务",
+            Style::new().fg(pal().dim),
+        )));
     }
 
     frame.render_widget(
@@ -2910,19 +3055,19 @@ fn draw_cache_modal(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .title(Line::from(vec![
-            Span::styled("▍", Style::new().fg(ACCENT)),
-            Span::styled(" 网络缓存 ", Style::new().fg(TEXT).bold()),
+            Span::styled("▍", Style::new().fg(pal().accent)),
+            Span::styled(" 网络缓存 ", Style::new().fg(pal().text).bold()),
         ]))
-        .border_style(Style::new().fg(ACCENT));
+        .border_style(Style::new().fg(pal().accent));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
     let mut lines = Vec::new();
     if let Some(stats) = &app.cache_stats {
         lines.push(Line::from(vec![
-            Span::styled("  ▍ ", Style::new().fg(ACCENT)),
-            Span::styled("DNS 缓存", Style::new().fg(TEXT).bold()),
-            Span::styled("（systemd-resolved）", Style::new().fg(DIM)),
+            Span::styled("  ▍ ", Style::new().fg(pal().accent)),
+            Span::styled("DNS 缓存", Style::new().fg(pal().text).bold()),
+            Span::styled("（systemd-resolved）", Style::new().fg(pal().dim)),
         ]));
         lines.push(detail("当前条目", stats.current_size.to_string()));
         lines.push(detail("命中", stats.hits.to_string()));
@@ -2941,7 +3086,7 @@ fn draw_cache_modal(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         lines.push(Line::from(Span::styled(
             " 无法读取网络缓存统计",
-            Style::new().fg(WARN),
+            Style::new().fg(pal().warn),
         )));
     }
 
@@ -2955,7 +3100,7 @@ fn draw_cache_modal(frame: &mut Frame, area: Rect, app: &App) {
     );
     lines.push(Line::from(Span::styled(
         " [f] 清空 DNS 缓存",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
     record_mouse(
         app,
@@ -2964,7 +3109,7 @@ fn draw_cache_modal(frame: &mut Frame, area: Rect, app: &App) {
     );
     lines.push(Line::from(Span::styled(
         " [F] 清空邻居缓存",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
     record_mouse(
         app,
@@ -2973,7 +3118,7 @@ fn draw_cache_modal(frame: &mut Frame, area: Rect, app: &App) {
     );
     lines.push(Line::from(Span::styled(
         " [e] 修改 DNS 缓存上限（重启 resolved）",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
     record_mouse(
         app,
@@ -2986,13 +3131,13 @@ fn draw_cache_modal(frame: &mut Frame, area: Rect, app: &App) {
         MouseAction::CacheClose,
     );
     lines.push(Line::from(vec![
-        Span::styled(" [r] 刷新统计", Style::new().fg(DIM)),
-        Span::styled("   [Esc] 关闭", Style::new().fg(DIM)),
+        Span::styled(" [r] 刷新统计", Style::new().fg(pal().dim)),
+        Span::styled("   [Esc] 关闭", Style::new().fg(pal().dim)),
     ]));
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         " 修改缓存上限会写入 /etc/systemd/resolved.conf.d/rsztui-cache.conf",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
 
     frame.render_widget(
@@ -3008,72 +3153,101 @@ fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut lines = vec![
         Line::from(vec![
-            Span::styled("  配置文件  ", Style::new().fg(DIM)),
+            Span::styled("  配置文件  ", Style::new().fg(pal().dim)),
             Span::styled(
                 crate::config::Config::path().display().to_string(),
-                Style::new().fg(TEXT),
+                Style::new().fg(pal().text),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  asusd 配置 ", Style::new().fg(DIM)),
-            Span::styled("/etc/asusd/asusd.ron", Style::new().fg(TEXT)),
+            Span::styled("  asusd 配置 ", Style::new().fg(pal().dim)),
+            Span::styled("/etc/asusd/asusd.ron", Style::new().fg(pal().text)),
         ]),
         Line::from(vec![
-            Span::styled("  版本      ", Style::new().fg(DIM)),
+            Span::styled("  版本      ", Style::new().fg(pal().dim)),
             Span::styled(
                 format!("RszTui {}", env!("CARGO_PKG_VERSION")),
-                Style::new().fg(TEXT),
+                Style::new().fg(pal().text),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  持久化    ", Style::new().fg(DIM)),
+            Span::styled("  持久化    ", Style::new().fg(pal().dim)),
             Span::styled(
                 if app.tuning {
                     "asusd 接管，开启"
                 } else {
                     "关闭"
                 },
-                Style::new().fg(if app.tuning { GOOD } else { WARN }),
+                Style::new().fg(if app.tuning { pal().good } else { pal().warn }),
             ),
         ]),
         Line::raw(""),
         section("硬件与系统"),
         Line::from(vec![
-            Span::styled("  CPU       ", Style::new().fg(DIM)),
-            Span::styled(util::truncate(&app.hw.cpu_model, 58), Style::new().fg(TEXT)),
+            Span::styled("  CPU       ", Style::new().fg(pal().dim)),
+            Span::styled(
+                util::truncate(&app.hw.cpu_model, 58),
+                Style::new().fg(pal().text),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("  核心      ", Style::new().fg(DIM)),
+            Span::styled("  核心      ", Style::new().fg(pal().dim)),
             Span::styled(
                 format!("{} 核 / {} 线程", app.hw.cores, app.hw.threads),
-                Style::new().fg(TEXT),
+                Style::new().fg(pal().text),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  显卡      ", Style::new().fg(DIM)),
+            Span::styled("  显卡      ", Style::new().fg(pal().dim)),
             Span::styled(
                 util::truncate(&app.hw.gpus.join(" / "), 58),
-                Style::new().fg(TEXT),
+                Style::new().fg(pal().text),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  内存      ", Style::new().fg(DIM)),
+            Span::styled("  内存      ", Style::new().fg(pal().dim)),
             Span::styled(
                 util::human_bytes(app.hw.memory_total as f64),
-                Style::new().fg(TEXT),
+                Style::new().fg(pal().text),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  内核      ", Style::new().fg(DIM)),
-            Span::styled(app.hw.kernel.clone(), Style::new().fg(TEXT)),
+            Span::styled("  内核      ", Style::new().fg(pal().dim)),
+            Span::styled(app.hw.kernel.clone(), Style::new().fg(pal().text)),
         ]),
         Line::from(vec![
-            Span::styled("  BIOS      ", Style::new().fg(DIM)),
-            Span::styled(app.hw.bios.clone(), Style::new().fg(TEXT)),
+            Span::styled("  BIOS      ", Style::new().fg(pal().dim)),
+            Span::styled(app.hw.bios.clone(), Style::new().fg(pal().text)),
         ]),
         Line::raw(""),
         section("依赖检查"),
     ];
+
+    let mut appearance = vec![section("外观")];
+    appearance.push(setting_choices(
+        app,
+        inner,
+        inner.y + 6,
+        "主题",
+        &crate::config::THEMES,
+        &app.cfg.ui.theme,
+        MouseAction::SetTheme,
+    ));
+    appearance.push(setting_choices(
+        app,
+        inner,
+        inner.y + 7,
+        "速率",
+        &crate::config::RATE_STYLES,
+        &app.cfg.ui.rate_style,
+        MouseAction::SetRateStyle,
+    ));
+    appearance.push(Line::from(Span::styled(
+        "  t 主题  y 速率   btop=KiB/s / 十进制=KB/s / 比特=Mbit/s",
+        Style::new().fg(pal().dim),
+    )));
+    appearance.push(Line::raw(""));
+    lines.splice(5..5, appearance);
 
     for check in &app.deps.checks {
         lines.push(Line::from(vec![
@@ -3083,44 +3257,78 @@ fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
                     if check.ok { "✅" } else { "❌" },
                     check.name
                 ),
-                Style::new().fg(if check.ok { GOOD } else { BAD }),
+                Style::new().fg(if check.ok { pal().good } else { pal().bad }),
             ),
-            Span::styled(util::truncate(&check.detail, 52), Style::new().fg(TEXT)),
+            Span::styled(
+                util::truncate(&check.detail, 52),
+                Style::new().fg(pal().text),
+            ),
         ]));
     }
     if app.deps.has_warnings() {
         lines.push(Line::from(Span::styled(
             "  运行 rsztui doctor 查看安装/启动命令",
-            Style::new().fg(WARN),
+            Style::new().fg(pal().warn),
         )));
     }
 
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         "  按 ? 查看完整快捷键，持久化说明见 docs/CONFIG.md",
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     )));
 
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
+fn setting_choices(
+    app: &App,
+    inner: Rect,
+    y: u16,
+    label: &str,
+    items: &[(&str, &str)],
+    selected: &str,
+    action: fn(usize) -> MouseAction,
+) -> Line<'static> {
+    let prefix = format!("  {label}    ");
+    let mut x = inner.x + UnicodeWidthStr::width(prefix.as_str()) as u16;
+    let mut spans = vec![Span::styled(prefix, Style::new().fg(pal().dim))];
+    for (index, (key, text)) in items.iter().enumerate() {
+        let active = *key == selected;
+        let style = if active {
+            Style::new().fg(Color::Black).bg(pal().accent).bold()
+        } else {
+            Style::new().fg(pal().accent)
+        };
+        let chip = format!(" {text} ");
+        let width = UnicodeWidthStr::width(chip.as_str()) as u16;
+        if y < inner.bottom() {
+            record_mouse(app, Rect::new(x, y, width, 1), action(index));
+        }
+        spans.push(Span::styled(chip, style));
+        spans.push(Span::raw(" "));
+        x += width + 1;
+    }
+    Line::from(spans)
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(area);
 
     let status_style = if app.status_err {
-        Style::new().fg(BAD)
+        Style::new().fg(pal().bad)
     } else {
-        Style::new().fg(GOOD)
+        Style::new().fg(pal().good)
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" ▌ ", Style::new().fg(ACCENT)),
+            Span::styled(" ▌ ", Style::new().fg(pal().accent)),
             Span::styled(
                 util::truncate(&app.status, (area.width as usize).saturating_sub(3)),
                 status_style,
             ),
         ]))
-        .style(Style::new().bg(SURFACE)),
+        .style(Style::new().bg(pal().surface)),
         rows[0],
     );
 
@@ -3142,7 +3350,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             hint,
-            Style::new().fg(DIM).bg(Color::Rgb(28, 32, 38)),
+            Style::new().fg(pal().dim).bg(Color::Rgb(28, 32, 38)),
         ))),
         rows[1],
     );
@@ -3191,10 +3399,10 @@ fn draw_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal) {
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .title(Line::from(vec![
-            Span::styled("▍", Style::new().fg(ACCENT)),
-            Span::styled(format!(" {title} "), Style::new().fg(TEXT).bold()),
+            Span::styled("▍", Style::new().fg(pal().accent)),
+            Span::styled(format!(" {title} "), Style::new().fg(pal().text).bold()),
         ]))
-        .border_style(Style::new().fg(ACCENT));
+        .border_style(Style::new().fg(pal().accent));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
@@ -3219,9 +3427,9 @@ fn draw_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal) {
         let width = UnicodeWidthStr::width(*label) as u16;
         record_mouse(app, Rect::new(x, parts[1].y, width + 3, 1), *action);
         let style = if app.hover == Some(*action) {
-            Style::new().fg(Color::Black).bg(ACCENT).bold()
+            Style::new().fg(Color::Black).bg(pal().accent).bold()
         } else {
-            Style::new().fg(ACCENT).bg(SURFACE).bold()
+            Style::new().fg(pal().accent).bg(pal().surface).bold()
         };
         spans.push(Span::styled(format!(" {label} "), style));
         spans.push(Span::raw(" "));
@@ -3233,7 +3441,7 @@ fn draw_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal) {
         } else {
             "   Enter 关闭"
         },
-        Style::new().fg(DIM),
+        Style::new().fg(pal().dim),
     ));
     frame.render_widget(Paragraph::new(Line::from(spans)), parts[1]);
 }
@@ -3242,39 +3450,39 @@ fn panel(title: impl Into<Line<'static>>) -> Block<'static> {
     Block::bordered()
         .border_type(BorderType::Rounded)
         .title(panel_title(title.into()))
-        .title_style(Style::new().fg(TEXT).bold())
-        .border_style(Style::new().fg(PANEL_BORDER))
+        .title_style(Style::new().fg(pal().text).bold())
+        .border_style(Style::new().fg(pal().border))
 }
 
 fn panel_focused(title: impl Into<Line<'static>>, focused: bool) -> Block<'static> {
-    let border = if focused { ACCENT } else { PANEL_BORDER };
+    let border = if focused { pal().accent } else { pal().border };
     Block::bordered()
         .border_type(BorderType::Rounded)
         .title(panel_title(title.into()))
-        .title_style(Style::new().fg(TEXT).bold())
+        .title_style(Style::new().fg(pal().text).bold())
         .border_style(Style::new().fg(border))
 }
 
 fn panel_title(mut title: Line<'static>) -> Line<'static> {
     title
         .spans
-        .insert(0, Span::styled("▍", Style::new().fg(ACCENT)));
+        .insert(0, Span::styled("▍", Style::new().fg(pal().accent)));
     title
 }
 
 fn profile_color(profile: Profile) -> Color {
     match profile {
         Profile::Quiet => Color::Rgb(110, 170, 255),
-        Profile::Balanced => GOOD,
-        Profile::Performance => BAD,
+        Profile::Balanced => pal().good,
+        Profile::Performance => pal().bad,
     }
 }
 
 fn battery_color(app: &App) -> Color {
     match app.battery.capacity {
-        Some(v) if v <= 15 => BAD,
-        Some(v) if v <= 35 => WARN,
-        _ => GOOD,
+        Some(v) if v <= 15 => pal().bad,
+        Some(v) if v <= 35 => pal().warn,
+        _ => pal().good,
     }
 }
 
@@ -3288,20 +3496,20 @@ fn mix_color(a: Color, b: Color, t: f32) -> Color {
 
 fn load_color(value: f32) -> Color {
     if value >= 85.0 {
-        BAD
+        pal().bad
     } else if value >= 55.0 {
-        WARN
+        pal().warn
     } else {
-        GOOD
+        pal().good
     }
 }
 
 fn temp_color(value: f32) -> Color {
     if value >= 90.0 {
-        BAD
+        pal().bad
     } else if value >= 75.0 {
-        WARN
+        pal().warn
     } else {
-        GOOD
+        pal().good
     }
 }

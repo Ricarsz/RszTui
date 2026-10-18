@@ -14,7 +14,7 @@ use ratatui::DefaultTerminal;
 use ratatui::layout::Rect;
 
 use crate::asus::{self, BatteryInfo, GpuMode, PowerField, PowerSource, Profile, ProfileState};
-use crate::config::{Config, FanPreset};
+use crate::config::{self, Config, FanPreset};
 use crate::deps;
 use crate::hw;
 use crate::nm;
@@ -254,6 +254,8 @@ pub enum MouseAction {
     PerfPanel(PerfFocus),
     SetAcDefault(usize),
     SetBatteryDefault(usize),
+    SetTheme(usize),
+    SetRateStyle(usize),
     ModalConfirm,
     ModalCancel,
 }
@@ -882,6 +884,8 @@ impl App {
                     Pending::DefaultBattery(profile),
                 );
             }
+            MouseAction::SetTheme(index) => self.set_theme(index)?,
+            MouseAction::SetRateStyle(index) => self.set_rate_style(index)?,
             MouseAction::ModalConfirm | MouseAction::ModalCancel => {}
         }
         Ok(())
@@ -1001,7 +1005,44 @@ impl App {
             Tab::Lighting => self.handle_lighting_key(key)?,
             Tab::Network => self.handle_network_key(key)?,
             Tab::Services => self.handle_service_key(key)?,
+            Tab::Settings => self.handle_settings_key(key)?,
             _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_settings_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Char('t') => {
+                let next = (config::theme_index(&self.cfg.ui.theme) + 1) % config::THEMES.len();
+                self.set_theme(next)?;
+            }
+            KeyCode::Char('y') => {
+                let next = (config::rate_style_index(&self.cfg.ui.rate_style) + 1)
+                    % config::RATE_STYLES.len();
+                self.set_rate_style(next)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn set_theme(&mut self, index: usize) -> Result<()> {
+        if let Some((key, label)) = config::THEMES.get(index) {
+            self.cfg.ui.theme = (*key).to_string();
+            self.cfg.save()?;
+            self.status = format!("主题：{label}");
+            self.status_err = false;
+        }
+        Ok(())
+    }
+
+    fn set_rate_style(&mut self, index: usize) -> Result<()> {
+        if let Some((key, label)) = config::RATE_STYLES.get(index) {
+            self.cfg.ui.rate_style = (*key).to_string();
+            self.cfg.save()?;
+            self.status = format!("速率格式：{label}");
+            self.status_err = false;
         }
         Ok(())
     }
@@ -2480,6 +2521,9 @@ fn help_text() -> String {
         "  u 激活   d 断开   x 删除   o Wi-Fi 开关   t 热点",
         "  p Ping   n DNS 查询   c 网络缓存（DNS/邻居）",
         "  IPv4 编辑：Enter 切换方法/下一项，直接输入，a 应用",
+        "",
+        "设置",
+        "  t 下一个主题   y 下一种速率格式   也可直接点击设置页的选项",
         "",
         "说明",
         "  修改直接写入 asusd/NM，不生成备份文件",

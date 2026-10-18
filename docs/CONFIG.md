@@ -12,7 +12,30 @@
 
 - 三套功耗预设（静音/均衡/性能）
 - 保存的风扇预设（原始 PWM）
-- 界面偏好（上次页面）
+- 界面偏好（上次页面、主题、速率格式）
+
+## 外观与速率
+
+设置页（`8`）可直接点击，或按：
+
+- `t` 切换主题
+- `y` 切换速率格式
+
+配置文件对应字段：
+
+```toml
+[ui]
+theme = "ocean"      # ocean / forest / sunset / violet / mono
+rate_style = "btop"  # btop / decimal / bits
+```
+
+速率格式：
+
+- `btop`：`KiB/s`、`MiB/s`（1024 进制）
+- `decimal`：`KB/s`、`MB/s`（1000 进制）
+- `bits`：`Kbit/s`、`Mbit/s`（按 1000 进制的比特率）
+
+主题只影响 TUI 配色，不修改终端字体；字体由终端模拟器决定。
 
 即使以 sudo 运行，也会通过 `SUDO_USER` 写入真实用户家目录，而不是 `/root`。
 
