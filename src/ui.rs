@@ -294,7 +294,7 @@ fn draw_graph_inner(
     let max = max.max(1) as f64;
     let last = (data.len().saturating_sub(1)).max(1) as f64;
     let grid = Color::Rgb(46, 54, 66);
-    let fill = Color::Rgb(26, 42, 50);
+    let fill = mix_color(color, Color::Rgb(8, 12, 16), 0.58);
     let values: Vec<f64> = data
         .iter()
         .map(|value| (*value).min(max as u64) as f64)
@@ -325,7 +325,7 @@ fn draw_graph_inner(
                     color: grid,
                 });
             }
-            let steps = (last * 4.0) as usize;
+            let steps = (last * 10.0) as usize;
             for i in 0..=steps {
                 let x = i as f64 / 4.0;
                 let y = value_at(x);
@@ -338,13 +338,15 @@ fn draw_graph_inner(
                 });
             }
             for pair in points.windows(2) {
-                ctx.draw(&CanvasLine {
-                    x1: pair[0].0,
-                    y1: pair[0].1,
-                    x2: pair[1].0,
-                    y2: pair[1].1,
-                    color,
-                });
+                for offset in [-0.5, 0.0, 0.5] {
+                    ctx.draw(&CanvasLine {
+                        x1: pair[0].0,
+                        y1: (pair[0].1 + offset).max(0.0),
+                        x2: pair[1].0,
+                        y2: (pair[1].1 + offset).max(0.0),
+                        color,
+                    });
+                }
             }
             if let Some((x, y)) = points.last() {
                 ctx.draw(&CanvasLine {
@@ -445,7 +447,7 @@ fn draw_cpu(frame: &mut Frame, area: Rect, app: &App) {
                 let bar = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
                     [((*value / 100.0 * 7.0).round() as usize).min(7)];
                 spans.push(Span::styled(
-                    format!("C{index:<2}{bar}{value:>3.0}% "),
+                    format!("C{index:02}{bar}{value:>3.0}% "),
                     Style::new().fg(load_color(*value)),
                 ));
             }
@@ -936,7 +938,12 @@ fn draw_profiles(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_gpu_picker(frame: &mut Frame, area: Rect, app: &App) {
-    let block = panel(" GPU 模式 ");
+    record_mouse(
+        app,
+        area,
+        MouseAction::PerfPanel(crate::app::PerfFocus::Gpu),
+    );
+    let block = panel_focused(" GPU 模式 ", app.perf_focus == crate::app::PerfFocus::Gpu);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1445,18 +1452,25 @@ fn draw_fan_detail(frame: &mut Frame, area: Rect, app: &App) {
                 Style::new().fg(if curve.enabled { GOOD } else { BAD }),
             ),
         ]));
-        let points: Vec<String> = curve
-            .temp
+        let temps: Vec<String> = curve.temp.iter().map(|temp| format!("{temp:>4}")).collect();
+        let pwms: Vec<String> = curve.pwm.iter().map(|pwm| format!("{pwm:>4}")).collect();
+        let percent: Vec<String> = curve
+            .pwm
             .iter()
-            .zip(curve.pwm.iter())
-            .map(|(temp, pwm)| format!("{temp}°C {pwm}/{}%", (*pwm as u32 * 100 / 255)))
+            .map(|pwm| format!("{:>3}%", *pwm as u32 * 100 / 255))
             .collect();
-        for chunk in points.chunks(4) {
-            lines.push(Line::from(Span::styled(
-                format!("    {}", chunk.join("   ")),
-                Style::new().fg(Color::Gray),
-            )));
-        }
+        lines.push(Line::from(vec![
+            Span::styled("     温度 ", Style::new().fg(DIM)),
+            Span::styled(temps.join(" "), Style::new().fg(Color::Gray)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("     PWM  ", Style::new().fg(DIM)),
+            Span::styled(pwms.join(" "), Style::new().fg(Color::Gray)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("     占空 ", Style::new().fg(DIM)),
+            Span::styled(percent.join(" "), Style::new().fg(Color::Rgb(90, 200, 220))),
+        ]));
         lines.push(Line::raw(""));
     }
 
@@ -2849,6 +2863,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             crate::app::PerfFocus::Profiles => " j/k 选择  Enter 切换  a/b 默认  f 焦点  g/G GPU",
             crate::app::PerfFocus::Presets => " j/k 预设  Enter/p 套用  f 焦点",
             crate::app::PerfFocus::Power => " j/k 字段  h/l 调整  Enter 应用  f 焦点",
+            crate::app::PerfFocus::Gpu => " j/k 选择 GPU  Enter/G 应用  f 焦点",
         },
         Tab::Battery => " h/l 上限  Enter 应用  o 单次充满  ? 帮助",
         Tab::Fan => " i/I 编辑曲线  j/k 预设  p 应用  s 保存  e 启用  ? 帮助",
@@ -2984,6 +2999,14 @@ fn battery_color(app: &App) -> Color {
         Some(v) if v <= 35 => WARN,
         _ => GOOD,
     }
+}
+
+fn mix_color(a: Color, b: Color, t: f32) -> Color {
+    let (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) = (a, b) else {
+        return a;
+    };
+    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+    Color::Rgb(mix(ar, br), mix(ag, bg), mix(ab, bb))
 }
 
 fn load_color(value: f32) -> Color {

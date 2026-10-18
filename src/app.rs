@@ -82,6 +82,7 @@ pub enum PerfFocus {
     Profiles,
     Presets,
     Power,
+    Gpu,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -780,6 +781,7 @@ impl App {
                 self.service_sel = index.min(self.services.len().saturating_sub(1));
             }
             MouseAction::Gpu(index) => {
+                self.perf_focus = PerfFocus::Gpu;
                 self.gpu_sel = index.min(GpuMode::ALL.len().saturating_sub(1));
                 if double {
                     let mode = GpuMode::ALL[self.gpu_sel];
@@ -989,7 +991,8 @@ impl App {
                 self.perf_focus = match self.perf_focus {
                     PerfFocus::Profiles => PerfFocus::Presets,
                     PerfFocus::Presets => PerfFocus::Power,
-                    PerfFocus::Power => PerfFocus::Profiles,
+                    PerfFocus::Power => PerfFocus::Gpu,
+                    PerfFocus::Gpu => PerfFocus::Profiles,
                 };
             }
             KeyCode::Char('g') => {
@@ -1040,6 +1043,23 @@ impl App {
                             "设置电池默认模式",
                             format!("电池供电时默认使用{}模式？", profile.zh()),
                             Pending::DefaultBattery(profile),
+                        );
+                    }
+                    _ => {}
+                },
+                PerfFocus::Gpu => match key.code {
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.gpu_sel = (self.gpu_sel + 1) % GpuMode::ALL.len();
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.gpu_sel = (self.gpu_sel + GpuMode::ALL.len() - 1) % GpuMode::ALL.len();
+                    }
+                    KeyCode::Enter | KeyCode::Char('G') => {
+                        let mode = GpuMode::ALL[self.gpu_sel % GpuMode::ALL.len()];
+                        self.confirm(
+                            "切换 GPU 模式",
+                            format!("将 GPU 模式设为{}？修改后需要重启。", mode.zh()),
+                            Pending::Gpu(mode),
                         );
                     }
                     _ => {}
