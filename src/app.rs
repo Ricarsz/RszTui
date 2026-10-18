@@ -12,6 +12,7 @@ use ratatui::DefaultTerminal;
 use crate::asus::{self, BatteryInfo, GpuMode, PowerField, PowerSource, Profile, ProfileState};
 use crate::config::{Config, FanPreset};
 use crate::deps;
+use crate::hw;
 use crate::nm;
 use crate::sys::{Collector, Snapshot};
 use crate::ui;
@@ -265,6 +266,7 @@ pub enum Modal {
 pub struct App {
     pub cfg: Config,
     pub deps: deps::Report,
+    pub hw: hw::HardwareInfo,
     pub tab: Tab,
     pub profile: Option<ProfileState>,
     pub battery: BatteryInfo,
@@ -282,6 +284,7 @@ pub struct App {
     pub fan_sel: usize,
     pub fan_edit: Option<FanEdit>,
     pub led: String,
+    pub aura: Option<asus::AuraStatus>,
     pub aura_color: usize,
     pub tuning: bool,
     pub net_view: NetView,
@@ -335,6 +338,7 @@ impl App {
         let mut app = Self {
             cfg,
             deps: report,
+            hw: hw::collect(),
             tab,
             profile: None,
             battery: BatteryInfo::default(),
@@ -352,6 +356,7 @@ impl App {
             fan_sel: 0,
             fan_edit: None,
             led: "未知".into(),
+            aura: None,
             aura_color: 0,
             tuning: false,
             net_view: NetView::Connections,
@@ -383,7 +388,9 @@ impl App {
         };
 
         app.refresh_fast();
-        app.refresh_slow();
+        app.refresh_core();
+        app.refresh_current_tab();
+        app.tuning = asus::profile_tuning().unwrap_or(false);
         if let Some(profile) = app.profile {
             app.profile_sel = Profile::ALL
                 .iter()
@@ -406,26 +413,34 @@ impl App {
     }
 
     fn event_loop(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        let mut dirty = true;
         loop {
-            terminal.draw(|frame| ui::draw(frame, self))?;
+            if dirty {
+                terminal.draw(|frame| ui::draw(frame, self))?;
+                dirty = false;
+            }
 
             if event::poll(Duration::from_millis(200))?
                 && let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
-                && let Err(err) = self.handle_key(key)
             {
-                self.status = format!("错误：{err:#}");
-                self.status_err = true;
+                if let Err(err) = self.handle_key(key) {
+                    self.status = format!("错误：{err:#}");
+                    self.status_err = true;
+                }
+                dirty = true;
             }
 
             if self.last_tick.elapsed() >= Duration::from_secs(1) {
                 self.refresh_fast();
                 self.last_tick = Instant::now();
+                dirty = true;
             }
 
             if self.last_slow.elapsed() >= Duration::from_secs(5) {
                 self.refresh_slow();
                 self.last_slow = Instant::now();
+                dirty = true;
             }
 
             if self.quit {
@@ -459,6 +474,7 @@ impl App {
             }
             KeyCode::Char('r') => {
                 self.deps = deps::check();
+                self.hw = hw::collect();
                 self.refresh_slow();
                 self.status = "已刷新".into();
                 self.status_err = false;
@@ -562,6 +578,10 @@ impl App {
         self.tab = tab;
         self.cfg.ui.last_tab = tab.index();
         let _ = self.cfg.save();
+        if tab == Tab::Settings {
+            self.deps = deps::check();
+        }
+        self.refresh_current_tab();
     }
 
     fn handle_tab_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -961,17 +981,19 @@ impl App {
         match key.code {
             KeyCode::Char('b') => {
                 asus::led_next()?;
-                self.refresh_slow();
+                self.refresh_current_tab();
                 self.status = "键盘亮度已切换".into();
                 self.status_err = false;
             }
             KeyCode::Char('e') => {
                 asus::aura_next()?;
+                self.refresh_current_tab();
                 self.status = "已切换到下一个灯效".into();
                 self.status_err = false;
             }
             KeyCode::Char('E') => {
                 asus::aura_prev()?;
+                self.refresh_current_tab();
                 self.status = "已切换到上一个灯效".into();
                 self.status_err = false;
             }
@@ -981,6 +1003,7 @@ impl App {
             KeyCode::Char('S') => {
                 let (name, hex) = AURA_COLORS[self.aura_color % AURA_COLORS.len()];
                 asus::aura_static(hex)?;
+                self.refresh_current_tab();
                 self.status = format!("灯效：静态 {name}");
                 self.status_err = false;
             }
@@ -1527,6 +1550,11 @@ impl App {
     }
 
     pub fn refresh_slow(&mut self) {
+        self.refresh_core();
+        self.refresh_current_tab();
+    }
+
+    fn refresh_core(&mut self) {
         let mut errors = Vec::new();
 
         match asus::profile_get() {
@@ -1560,42 +1588,64 @@ impl App {
 
         self.tuning = asus::profile_tuning().unwrap_or(false);
 
-        let profile = self.profile.map(|p| p.active).unwrap_or(Profile::Balanced);
-        if let Ok(curves) = asus::fan_curves(profile) {
-            self.fan_curves = curves;
-        }
-        if let Ok(summary) = asus::fan_enabled_summary() {
-            self.fan_enabled = summary;
-        }
-        if let Ok(led) = asus::led_status() {
-            self.led = led;
-        }
-
-        self.devices = nm::devices().unwrap_or_default();
-        self.connections = nm::connections()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|c| c.kind != "loopback")
-            .collect();
-        self.vpns = nm::vpn_list().unwrap_or_default();
-        self.ssid = nm::active_ssid().unwrap_or(None);
-        self.wifi_enabled = nm::wifi_enabled().ok();
-        if self.net_view == NetView::Wifi
-            && let Ok(list) = nm::wifi_scan(false)
-        {
-            self.wifi = list;
-        }
-        self.net_sel = self.net_sel.min(self.net_len().saturating_sub(1));
-        self.refresh_net_detail();
-        self.services = crate::services::status_all();
-        self.service_sel = self.service_sel.min(self.services.len().saturating_sub(1));
-        self.fan_sel = self
-            .fan_sel
-            .min(self.cfg.fan_presets.len().saturating_sub(1));
-
         if !errors.is_empty() {
             self.status = format!("刷新失败：{}", errors.join("；"));
             self.status_err = true;
+        }
+    }
+
+    fn refresh_current_tab(&mut self) {
+        match self.tab {
+            Tab::Fan => {
+                let profile = self.profile.map(|p| p.active).unwrap_or(Profile::Balanced);
+                if let Ok(curves) = asus::fan_curves(profile) {
+                    self.fan_curves = curves;
+                }
+                if let Ok(summary) = asus::fan_enabled_summary() {
+                    self.fan_enabled = summary;
+                }
+                self.fan_sel = self
+                    .fan_sel
+                    .min(self.cfg.fan_presets.len().saturating_sub(1));
+            }
+            Tab::Lighting => match asus::aura_status() {
+                Ok(aura) => {
+                    self.led = aura.brightness_name.clone();
+                    self.aura = Some(aura);
+                }
+                Err(_) => {
+                    self.aura = None;
+                    if let Ok(led) = asus::led_status() {
+                        self.led = led;
+                    }
+                }
+            },
+            Tab::Network => {
+                self.devices = nm::devices().unwrap_or_default();
+                self.connections = nm::connections()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|c| c.kind != "loopback")
+                    .collect();
+                self.vpns = nm::vpn_list().unwrap_or_default();
+                self.ssid = nm::active_ssid().unwrap_or(None);
+                self.wifi_enabled = nm::wifi_enabled().ok();
+                if self.net_view == NetView::Wifi
+                    && let Ok(list) = nm::wifi_scan(false)
+                {
+                    self.wifi = list;
+                }
+                self.net_sel = self.net_sel.min(self.net_len().saturating_sub(1));
+                self.refresh_net_detail();
+            }
+            Tab::Services => {
+                self.services = crate::services::status_all();
+                self.service_sel = self.service_sel.min(self.services.len().saturating_sub(1));
+            }
+            Tab::Settings => {
+                self.tuning = asus::profile_tuning().unwrap_or(false);
+            }
+            Tab::Dashboard | Tab::Performance | Tab::Battery => {}
         }
     }
 }

@@ -2,10 +2,10 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Clear, Gauge, Paragraph, Sparkline, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, Gauge, Paragraph, Sparkline, Wrap};
 
 use crate::app::{AURA_COLORS, App, IpForm, Modal, NetView, Tab};
-use crate::asus::{GpuMode, Profile};
+use crate::asus::{self, GpuMode, Profile};
 use crate::nm;
 use crate::util;
 
@@ -73,6 +73,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
     ]);
 
     let block = Block::bordered()
+        .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(PANEL_BORDER))
         .title(Line::from(vec![
             Span::styled(" 状态 ", Style::new().fg(ACCENT).bold()),
@@ -153,6 +154,7 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
     ]));
 
     let block = Block::bordered()
+        .border_type(BorderType::Rounded)
         .title(Span::styled(" 导航 ", Style::new().fg(ACCENT).bold()))
         .border_style(Style::new().fg(PANEL_BORDER));
     frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
@@ -453,13 +455,33 @@ fn draw_asus_panel(frame: &mut Frame, area: Rect, app: &App) {
         .map(|f| format!("{} {}", f.value, f.unit))
         .collect();
     lines.push(Line::from(vec![
-        Span::styled("  CPU  ", Style::new().fg(DIM)),
+        Span::styled("  功耗  ", Style::new().fg(DIM)),
         Span::styled(power.join(" / "), Style::new().fg(Color::Gray)),
+    ]));
+
+    let width = inner.width as usize;
+    let cpu = format!(
+        "{} ({}C/{}T)",
+        app.hw.cpu_model, app.hw.cores, app.hw.threads
+    );
+    lines.push(Line::from(vec![
+        Span::styled("  CPU   ", Style::new().fg(DIM)),
+        Span::styled(
+            util::truncate(&cpu, width.saturating_sub(8)),
+            Style::new().fg(Color::Gray),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  显卡  ", Style::new().fg(DIM)),
+        Span::styled(
+            util::truncate(&app.hw.gpus.join(" / "), width.saturating_sub(8)),
+            Style::new().fg(Color::Gray),
+        ),
     ]));
 
     if let Some(mode) = app.gpu_mode {
         lines.push(Line::from(vec![
-            Span::styled("  GPU  ", Style::new().fg(DIM)),
+            Span::styled("  模式  ", Style::new().fg(DIM)),
             Span::styled(mode.zh(), Style::new().fg(Color::Gray)),
         ]));
     }
@@ -1060,51 +1082,200 @@ fn draw_fan_presets(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_lighting(frame: &mut Frame, area: Rect, app: &App) {
-    let block = panel(" 键盘灯光 ");
+    let rows = Layout::vertical([Constraint::Length(11), Constraint::Min(0)]).split(area);
+    let cols =
+        Layout::horizontal([Constraint::Percentage(46), Constraint::Percentage(54)]).split(rows[0]);
+
+    draw_lighting_status(frame, cols[0], app);
+    draw_lighting_colors(frame, cols[1], app);
+    draw_lighting_modes(frame, rows[1], app);
+}
+
+fn draw_lighting_status(frame: &mut Frame, area: Rect, app: &App) {
+    let block = panel(" 当前灯效 ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let mut lines = vec![
-        Line::from(vec![
+    let mut lines = Vec::new();
+    if let Some(aura) = &app.aura {
+        lines.push(Line::from(vec![
+            Span::styled("  模式  ", Style::new().fg(DIM)),
+            Span::styled(
+                format!("{}（{}）", aura.mode_name, aura.mode_zh),
+                Style::new().fg(ACCENT).bold(),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  亮度  ", Style::new().fg(DIM)),
+            Span::styled(aura.brightness_name.clone(), Style::new().fg(GOOD)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  颜色  ", Style::new().fg(DIM)),
+            Span::styled(format!("{} ", aura.color1), Style::new().fg(Color::Gray)),
+            Span::styled(
+                "████",
+                Style::new().fg(hex_color(aura.color1.trim_start_matches('#'))),
+            ),
+        ]));
+        if aura.color2 != "#000000" {
+            lines.push(Line::from(vec![
+                Span::styled("  副色  ", Style::new().fg(DIM)),
+                Span::styled(format!("{} ", aura.color2), Style::new().fg(Color::Gray)),
+                Span::styled(
+                    "████",
+                    Style::new().fg(hex_color(aura.color2.trim_start_matches('#'))),
+                ),
+            ]));
+        }
+        if !aura.speed.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("  速度  ", Style::new().fg(DIM)),
+                Span::styled(aura.speed.clone(), Style::new().fg(Color::Gray)),
+            ]));
+        }
+        if !aura.zone.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("  区域  ", Style::new().fg(DIM)),
+                Span::styled(aura.zone.clone(), Style::new().fg(Color::Gray)),
+            ]));
+        }
+    } else {
+        lines.push(Line::from(vec![
             Span::styled("  当前亮度  ", Style::new().fg(DIM)),
             Span::styled(app.led.clone(), Style::new().fg(ACCENT).bold()),
-        ]),
-        Line::raw(""),
-        Line::from(Span::styled(
-            " b 切换亮度（off → low → med → high）",
-            Style::new().fg(DIM),
-        )),
-        Line::from(Span::styled(
-            " e / E 下一个 / 上一个灯效",
-            Style::new().fg(DIM),
-        )),
-        Line::raw(""),
-        Line::from(Span::styled("  静态颜色  ", Style::new().fg(DIM))),
-    ];
-
-    let mut swatches = Vec::new();
-    for (index, (name, hex)) in AURA_COLORS.iter().enumerate() {
-        let selected = index == app.aura_color;
-        swatches.push(Span::styled(
-            format!(" {} {} ", if selected { "▶" } else { " " }, name),
-            Style::new().fg(hex_color(hex)),
-        ));
-        swatches.push(Span::raw(" "));
-        if index % 3 == 2 {
-            lines.push(Line::from(std::mem::take(&mut swatches)));
-        }
-    }
-    if !swatches.is_empty() {
-        lines.push(Line::from(swatches));
+        ]));
+        lines.push(Line::from(Span::styled(
+            "  无法读取 Aura 状态，键盘可能只支持亮度。",
+            Style::new().fg(WARN),
+        )));
     }
 
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        " c 切换颜色   S 应用静态色",
+        "  b 亮度   e/E 灯效   c 选色   S 应用静态色",
+        Style::new().fg(DIM),
+    )));
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn draw_lighting_colors(frame: &mut Frame, area: Rect, app: &App) {
+    let block = panel(" 静态颜色 ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines = Vec::new();
+    let mut row = Vec::new();
+    for (index, (name, hex)) in AURA_COLORS.iter().enumerate() {
+        let selected = index == app.aura_color;
+        row.push(Span::styled(
+            format!(" {} ", if selected { "▶" } else { " " }),
+            Style::new().fg(if selected { ACCENT } else { DIM }),
+        ));
+        row.push(Span::styled("██ ", Style::new().fg(hex_color(hex))));
+        row.push(Span::styled(
+            format!("{:<4}", name),
+            if selected {
+                Style::new().fg(ACCENT).bold()
+            } else {
+                Style::new().fg(Color::Gray)
+            },
+        ));
+        if row.len() >= 9 {
+            lines.push(Line::from(std::mem::take(&mut row)));
+        }
+    }
+    if !row.is_empty() {
+        lines.push(Line::from(row));
+    }
+
+    lines.push(Line::raw(""));
+    if let Some(aura) = &app.aura {
+        lines.push(Line::from(vec![
+            Span::styled("  当前颜色  ", Style::new().fg(DIM)),
+            Span::styled(format!("{} ", aura.color1), Style::new().fg(Color::Gray)),
+            Span::styled(
+                "████████",
+                Style::new().fg(hex_color(aura.color1.trim_start_matches('#'))),
+            ),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "  c 切换选中颜色   S 应用为静态色",
         Style::new().fg(DIM),
     )));
     lines.push(Line::from(Span::styled(
-        " 灯效列表：static / breathe / rainbow-cycle / rainbow-wave / stars / rain / ripple / pulse",
+        "  静态色只在 Static 灯效下生效",
+        Style::new().fg(DIM),
+    )));
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn draw_lighting_modes(frame: &mut Frame, area: Rect, app: &App) {
+    let block = panel(" 支持的灯效 ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let supported: Vec<u32> = app
+        .aura
+        .as_ref()
+        .map(|aura| {
+            if aura.supported.is_empty() {
+                vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12]
+            } else {
+                aura.supported.clone()
+            }
+        })
+        .unwrap_or_else(|| vec![0, 1, 2, 3, 10]);
+    let current = app.aura.as_ref().map(|aura| aura.mode);
+
+    let mut lines = Vec::new();
+    for mode in supported {
+        let active = current == Some(mode);
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {} ", if active { "▶" } else { " " }),
+                Style::new().fg(if active { ACCENT } else { DIM }),
+            ),
+            Span::styled(
+                format!("{:<14}", asus::aura_mode_name(mode)),
+                if active {
+                    Style::new().fg(ACCENT).bold()
+                } else {
+                    Style::new().fg(Color::Gray)
+                },
+            ),
+            Span::styled(
+                asus::aura_mode_zh(mode),
+                if active {
+                    Style::new().fg(ACCENT)
+                } else {
+                    Style::new().fg(DIM)
+                },
+            ),
+            if active {
+                Span::styled("   [当前]", Style::new().fg(GOOD))
+            } else {
+                Span::raw("")
+            },
+        ]));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "  e 下一个   E 上一个",
+        Style::new().fg(DIM),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  灯效由键盘固件决定，部分模式不支持颜色/速度调节",
         Style::new().fg(DIM),
     )));
 
@@ -1422,6 +1593,7 @@ fn draw_ip_form(frame: &mut Frame, area: Rect, form: &IpForm) {
 
     frame.render_widget(Clear, popup);
     let block = Block::bordered()
+        .border_type(BorderType::Rounded)
         .title(Span::styled(
             format!(" 编辑 IPv4 · {} ", form.conn),
             Style::new().fg(ACCENT).bold(),
@@ -1702,7 +1874,45 @@ fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
             ),
         ]),
         Line::raw(""),
-        Line::from(Span::styled(" 依赖与硬件", Style::new().fg(ACCENT).bold())),
+        Line::from(Span::styled(" 硬件与系统", Style::new().fg(ACCENT).bold())),
+        Line::from(vec![
+            Span::styled("  CPU       ", Style::new().fg(DIM)),
+            Span::styled(
+                util::truncate(&app.hw.cpu_model, 58),
+                Style::new().fg(Color::Gray),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  核心      ", Style::new().fg(DIM)),
+            Span::styled(
+                format!("{} 核 / {} 线程", app.hw.cores, app.hw.threads),
+                Style::new().fg(Color::Gray),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  显卡      ", Style::new().fg(DIM)),
+            Span::styled(
+                util::truncate(&app.hw.gpus.join(" / "), 58),
+                Style::new().fg(Color::Gray),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  内存      ", Style::new().fg(DIM)),
+            Span::styled(
+                util::human_bytes(app.hw.memory_total as f64),
+                Style::new().fg(Color::Gray),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  内核      ", Style::new().fg(DIM)),
+            Span::styled(app.hw.kernel.clone(), Style::new().fg(Color::Gray)),
+        ]),
+        Line::from(vec![
+            Span::styled("  BIOS      ", Style::new().fg(DIM)),
+            Span::styled(app.hw.bios.clone(), Style::new().fg(Color::Gray)),
+        ]),
+        Line::raw(""),
+        Line::from(Span::styled(" 依赖检查", Style::new().fg(ACCENT).bold())),
     ];
 
     for check in &app.deps.checks {
@@ -1728,20 +1938,11 @@ fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
         )));
     }
 
-    lines.extend([
-        Line::raw(""),
-        Line::from(Span::styled(" 说明", Style::new().fg(ACCENT).bold())),
-        Line::from(Span::styled(
-            "  性能模式、功耗、电池上限写入 /etc/asusd/asusd.ron，",
-            Style::new().fg(DIM),
-        )),
-        Line::from(Span::styled(
-            "  由 asusd 在开机和 AC/电池切换时自动恢复。",
-            Style::new().fg(DIM),
-        )),
-        Line::raw(""),
-        Line::from(Span::styled("  按 ? 查看完整快捷键", Style::new().fg(DIM))),
-    ]);
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "  按 ? 查看完整快捷键，持久化说明见 docs/CONFIG.md",
+        Style::new().fg(DIM),
+    )));
 
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
@@ -1825,6 +2026,7 @@ fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal) {
     };
 
     let block = Block::bordered()
+        .border_type(BorderType::Rounded)
         .title(Span::styled(
             format!(" {title} "),
             Style::new().fg(ACCENT).bold(),
@@ -1851,6 +2053,7 @@ fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal) {
 
 fn panel(title: impl Into<Line<'static>>) -> Block<'static> {
     Block::bordered()
+        .border_type(BorderType::Rounded)
         .title(title.into())
         .title_style(Style::new().fg(ACCENT).bold())
         .border_style(Style::new().fg(PANEL_BORDER))
@@ -1859,6 +2062,7 @@ fn panel(title: impl Into<Line<'static>>) -> Block<'static> {
 fn panel_focused(title: impl Into<Line<'static>>, focused: bool) -> Block<'static> {
     let border = if focused { ACCENT } else { PANEL_BORDER };
     Block::bordered()
+        .border_type(BorderType::Rounded)
         .title(title.into())
         .title_style(Style::new().fg(ACCENT).bold())
         .border_style(Style::new().fg(border))

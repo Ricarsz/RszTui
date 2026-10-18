@@ -136,8 +136,16 @@ impl BatteryInfo {
 
 pub fn battery_info() -> Result<BatteryInfo> {
     let mut info = BatteryInfo::default();
+    let bat = battery_dir();
 
-    if let Ok(out) = util::run("asusctl", &["battery", "info"]) {
+    if let Some(bat) = &bat {
+        info.limit =
+            read_sys(&bat.join("charge_control_end_threshold")).and_then(|v| v.parse().ok());
+    }
+
+    if info.limit.is_none()
+        && let Ok(out) = util::run("asusctl", &["battery", "info"])
+    {
         for line in out.lines() {
             if let Some(v) = line.strip_prefix("Current battery charge limit:") {
                 info.limit = v.trim().trim_end_matches('%').parse().ok();
@@ -145,7 +153,6 @@ pub fn battery_info() -> Result<BatteryInfo> {
         }
     }
 
-    let bat = battery_dir();
     if let Some(bat) = bat {
         info.capacity = read_sys(&bat.join("capacity")).and_then(|v| v.parse().ok());
         info.status = read_sys(&bat.join("status")).unwrap_or_else(|| "未知".into());
@@ -648,6 +655,155 @@ pub fn fan_data(curves: &[FanCurve]) -> Option<(String, String)> {
     }
 
     Some((cpu?, gpu?))
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AuraStatus {
+    pub mode: u32,
+    pub mode_name: String,
+    pub mode_zh: String,
+    pub brightness: u8,
+    pub brightness_name: String,
+    pub color1: String,
+    pub color2: String,
+    pub speed: String,
+    pub zone: String,
+    pub supported: Vec<u32>,
+}
+
+pub fn aura_status() -> Result<AuraStatus> {
+    let out = util::run(
+        "busctl",
+        &[
+            "--system",
+            "--json=short",
+            "call",
+            "xyz.ljones.Asusd",
+            "/xyz/ljones/aura/tuf",
+            "org.freedesktop.DBus.Properties",
+            "GetAll",
+            "s",
+            "xyz.ljones.Aura",
+        ],
+    )?;
+    let value: serde_json::Value = serde_json::from_str(&out)?;
+    let data = value
+        .get("data")
+        .and_then(|v| v.get(0))
+        .ok_or_else(|| anyhow::anyhow!("Aura GetAll 返回格式不对"))?;
+
+    let mode = data
+        .get("LedMode")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let brightness = data
+        .get("Brightness")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u8;
+    let supported = data
+        .get("SupportedBasicModes")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.as_array())
+        .map(|v| {
+            v.iter()
+                .filter_map(|n| n.as_u64().map(|n| n as u32))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let md = data
+        .get("LedModeData")
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.as_array());
+    let color1 = md
+        .and_then(|v| v.get(2))
+        .map(rgb_hex)
+        .unwrap_or_else(|| "#000000".into());
+    let color2 = md
+        .and_then(|v| v.get(3))
+        .map(rgb_hex)
+        .unwrap_or_else(|| "#000000".into());
+    let speed = md
+        .and_then(|v| v.get(4))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let zone = md
+        .and_then(|v| v.get(5))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    Ok(AuraStatus {
+        mode,
+        mode_name: aura_mode_name(mode).into(),
+        mode_zh: aura_mode_zh(mode).into(),
+        brightness,
+        brightness_name: brightness_name(brightness).into(),
+        color1,
+        color2,
+        speed,
+        zone,
+        supported,
+    })
+}
+
+fn rgb_hex(value: &serde_json::Value) -> String {
+    let arr = value.as_array();
+    let get = |i: usize| {
+        arr.and_then(|a| a.get(i))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u8
+    };
+    format!("#{:02x}{:02x}{:02x}", get(0), get(1), get(2))
+}
+
+pub fn aura_mode_name(mode: u32) -> &'static str {
+    match mode {
+        0 => "Static",
+        1 => "Breathe",
+        2 => "RainbowCycle",
+        3 => "RainbowWave",
+        4 => "Stars",
+        5 => "Rain",
+        6 => "Highlight",
+        7 => "Laser",
+        8 => "Ripple",
+        10 => "Pulse",
+        11 => "Comet",
+        12 => "Flash",
+        _ => "Unknown",
+    }
+}
+
+pub fn aura_mode_zh(mode: u32) -> &'static str {
+    match mode {
+        0 => "静态",
+        1 => "呼吸",
+        2 => "彩虹循环",
+        3 => "彩虹波浪",
+        4 => "星光",
+        5 => "雨滴",
+        6 => "高亮",
+        7 => "激光",
+        8 => "涟漪",
+        10 => "脉冲",
+        11 => "彗星",
+        12 => "闪烁",
+        _ => "未知",
+    }
+}
+
+pub fn brightness_name(level: u8) -> &'static str {
+    match level {
+        0 => "Off",
+        1 => "Low",
+        2 => "Med",
+        3 => "High",
+        _ => "未知",
+    }
 }
 
 pub fn aura_next() -> Result<()> {

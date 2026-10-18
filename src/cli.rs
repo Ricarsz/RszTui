@@ -285,9 +285,13 @@ pub enum FanCmd {
 
 #[derive(Subcommand)]
 pub enum AuraCmd {
+    /// 当前灯效、亮度、颜色
+    Status,
     Next,
     Prev,
-    Static { colour: String },
+    Static {
+        colour: String,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
@@ -1237,6 +1241,40 @@ fn fan(cmd: FanCmd, json: bool) -> Result<()> {
 
 fn aura(cmd: AuraCmd, json: bool) -> Result<()> {
     match cmd {
+        AuraCmd::Status => {
+            let status = asus::aura_status()?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            } else {
+                println!("灯效  {}（{}）", status.mode_name, status.mode_zh);
+                println!("亮度  {}", status.brightness_name);
+                println!("颜色  {}", status.color1);
+                if status.color2 != "#000000" {
+                    println!("副色  {}", status.color2);
+                }
+                if !status.speed.is_empty() {
+                    println!("速度  {}", status.speed);
+                }
+                if !status.zone.is_empty() {
+                    println!("区域  {}", status.zone);
+                }
+                let supported: Vec<String> = status
+                    .supported
+                    .iter()
+                    .map(|mode| {
+                        format!(
+                            "{}/{}",
+                            asus::aura_mode_name(*mode),
+                            asus::aura_mode_zh(*mode)
+                        )
+                    })
+                    .collect();
+                if !supported.is_empty() {
+                    println!("支持  {}", supported.join(", "));
+                }
+            }
+            return Ok(());
+        }
         AuraCmd::Next => asus::aura_next()?,
         AuraCmd::Prev => asus::aura_prev()?,
         AuraCmd::Static { colour } => asus::aura_static(&colour)?,
