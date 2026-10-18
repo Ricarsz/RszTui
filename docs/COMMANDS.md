@@ -61,6 +61,13 @@ sudo rsztui net conn up wired
 sudo rsztui net conn delete old-connection
 sudo rsztui net hotspot on --password 'hotspot123' --ssid rsztui-hotspot
 sudo rsztui net hotspot off
+
+sudo rsztui net ping 1.1.1.1
+sudo rsztui net dns example.com
+sudo rsztui net cache status
+sudo rsztui net cache flush
+sudo rsztui net cache flush-neighbors
+sudo rsztui net cache size 4096
 ```
 
 ## 风扇
@@ -162,8 +169,13 @@ sudo rsztui service disable asus-shutdown --now
 | `o` | Wi-Fi 开关 |
 | `t` | 热点 |
 | `s` | 重新扫描 Wi-Fi |
+| `p` | Ping 测试 |
+| `n` | DNS 查询 |
+| `c` | DNS/邻居缓存面板 |
 
 IPv4 编辑：`j/k` 选字段，`Enter` 切换方法/下一项，直接输入，`Backspace` 删除，`Ctrl+U` 清空，`a` 应用，`Esc` 取消。
+
+缓存面板：`f` 清空 DNS 缓存，`F` 清空邻居缓存，`e` 修改 DNS 缓存上限（写入 `/etc/systemd/resolved.conf.d/rsztui-cache.conf` 并重启 resolved），`r` 刷新统计，`Esc` 关闭。
 
 ### 服务
 

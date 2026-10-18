@@ -38,6 +38,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
         draw_ip_form(frame, main_area, form);
     }
 
+    if app.cache_open {
+        draw_cache_modal(frame, area, app);
+    }
+
     if let Some(modal) = &app.modal {
         draw_modal(frame, area, modal);
     }
@@ -1520,6 +1524,20 @@ fn draw_net_details(frame: &mut Frame, area: Rect, app: &App) {
                     }
                     .into(),
                 ));
+                if let Some(dev) = &app.net_detail {
+                    if !dev.hwaddr.is_empty() {
+                        lines.push(detail("MAC", dev.hwaddr.clone()));
+                    }
+                    if !dev.mtu.is_empty() {
+                        lines.push(detail("MTU", dev.mtu.clone()));
+                    }
+                    if !dev.speed.is_empty() {
+                        lines.push(detail("速率", format!("{} Mbps", dev.speed)));
+                    }
+                    if !dev.routes.is_empty() {
+                        lines.push(detail("路由", util::truncate(&dev.routes, 60)));
+                    }
+                }
                 lines.push(Line::raw(""));
                 if let Some(ip) = &app.net_ipv4 {
                     lines.push(detail(
@@ -1565,12 +1583,19 @@ fn draw_net_details(frame: &mut Frame, area: Rect, app: &App) {
                     " u 激活   d 断开   x 删除",
                     Style::new().fg(DIM),
                 )));
+                lines.push(Line::from(Span::styled(
+                    " p Ping   n DNS 查询   c 缓存",
+                    Style::new().fg(DIM),
+                )));
             }
         }
         NetView::Wifi => {
             if let Some(ap) = app.wifi.get(app.net_sel) {
                 lines.push(detail("SSID", ap.ssid.clone()));
+                lines.push(detail("BSSID", ap.bssid.clone()));
                 lines.push(detail("信号", format!("{}%", ap.signal)));
+                lines.push(detail("信道", format!("{}  {}", ap.chan, ap.freq)));
+                lines.push(detail("速率", ap.rate.clone()));
                 lines.push(detail(
                     "加密",
                     if ap.security.is_empty() {
@@ -1589,7 +1614,7 @@ fn draw_net_details(frame: &mut Frame, area: Rect, app: &App) {
                     Style::new().fg(DIM),
                 )));
                 lines.push(Line::from(Span::styled(
-                    " s 重新扫描",
+                    " s 重新扫描   p Ping   n DNS 查询   c 缓存",
                     Style::new().fg(DIM),
                 )));
             }
@@ -1617,7 +1642,7 @@ fn draw_net_details(frame: &mut Frame, area: Rect, app: &App) {
 
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        " v 切换视图   o 无线开关   t 热点",
+        " v 视图   o 无线   t 热点   p Ping   n DNS   c 缓存",
         Style::new().fg(DIM),
     )));
 
@@ -1900,6 +1925,77 @@ fn enabled_zh(state: &str) -> &'static str {
     }
 }
 
+fn draw_cache_modal(frame: &mut Frame, area: Rect, app: &App) {
+    let vertical = Layout::vertical([
+        Constraint::Percentage(18),
+        Constraint::Percentage(64),
+        Constraint::Percentage(18),
+    ])
+    .split(area);
+    let horizontal = Layout::horizontal([
+        Constraint::Percentage(20),
+        Constraint::Percentage(60),
+        Constraint::Percentage(20),
+    ])
+    .split(vertical[1]);
+    let popup = horizontal[1];
+
+    frame.render_widget(Clear, popup);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(" 网络缓存 ", Style::new().fg(ACCENT).bold()))
+        .border_style(Style::new().fg(ACCENT));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let mut lines = Vec::new();
+    if let Some(stats) = &app.cache_stats {
+        lines.push(Line::from(Span::styled(
+            " DNS 缓存（systemd-resolved）",
+            Style::new().fg(ACCENT).bold(),
+        )));
+        lines.push(detail("当前条目", stats.current_size.to_string()));
+        lines.push(detail("命中", stats.hits.to_string()));
+        lines.push(detail("未命中", stats.misses.to_string()));
+        lines.push(detail("总事务", stats.transactions.to_string()));
+        lines.push(Line::raw(""));
+        lines.push(detail(
+            "DNS",
+            if stats.dns_servers.is_empty() {
+                "-".into()
+            } else {
+                stats.dns_servers.join(", ")
+            },
+        ));
+        lines.push(detail("邻居条目", stats.neighbors.to_string()));
+    } else {
+        lines.push(Line::from(Span::styled(
+            " 无法读取网络缓存统计",
+            Style::new().fg(WARN),
+        )));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        " f 清空 DNS 缓存   F 清空邻居缓存   r 刷新",
+        Style::new().fg(DIM),
+    )));
+    lines.push(Line::from(Span::styled(
+        " e 修改 DNS 缓存上限（重启 resolved）   Esc 关闭",
+        Style::new().fg(DIM),
+    )));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        " 修改缓存上限会写入 /etc/systemd/resolved.conf.d/rsztui-cache.conf",
+        Style::new().fg(DIM),
+    )));
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
 fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
     let block = panel(" 设置与关于 ");
     let inner = block.inner(area);
@@ -2034,7 +2130,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Tab::Battery => " h/l 上限  Enter 应用  o 单次充满  ? 帮助",
         Tab::Fan => " i/I 编辑曲线  j/k 预设  p 应用  s 保存  e 启用  ? 帮助",
         Tab::Lighting => " b 亮度  e/E 灯效  c 颜色  S 静态色  ? 帮助",
-        Tab::Network => " v 视图  j/k 选择  Enter 连接/编辑  u/d 启停  x 删除  o 无线  t 热点",
+        Tab::Network => " v 视图  j/k 选择  Enter 编辑  u/d 启停  p Ping  n DNS  c 缓存",
         Tab::Services => " j/k 选择  s 启动  t 停止  R 重启  e/d 自启  E/D 立即  ? 帮助",
         _ => " Tab 切换  1-8 跳转  r 刷新  ? 帮助  q 退出",
     };

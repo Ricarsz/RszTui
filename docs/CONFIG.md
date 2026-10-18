@@ -67,6 +67,21 @@ sudo systemctl enable --now NetworkManager
 
 TUI 启动时会弹出同样的检查结果；设置页常驻显示，`r` 重新检测。
 
+## DNS / 邻居缓存
+
+Network 页按 `c` 打开缓存面板，或使用 CLI：
+
+```bash
+sudo rsztui net cache status
+sudo rsztui net cache flush
+sudo rsztui net cache flush-neighbors
+sudo rsztui net cache size 4096
+```
+
+- `flush` 清空 systemd-resolved 的 DNS 缓存
+- `flush-neighbors` 清空内核 ARP/邻居缓存
+- `size` 写入 `/etc/systemd/resolved.conf.d/rsztui-cache.conf` 的 `CacheSize=`，并重启 `systemd-resolved`（会短暂中断 DNS）；范围 0–65536
+
 ## 安全说明
 
 - TUI 以 root 运行，只在本机终端使用。

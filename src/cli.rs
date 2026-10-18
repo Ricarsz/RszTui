@@ -200,6 +200,15 @@ pub enum NetCmd {
         #[command(subcommand)]
         cmd: HotspotCmd,
     },
+    /// DNS/邻居缓存
+    Cache {
+        #[command(subcommand)]
+        cmd: CacheCmd,
+    },
+    /// Ping 测试
+    Ping { host: String },
+    /// DNS 查询
+    Dns { domain: String },
 }
 
 #[derive(Subcommand)]
@@ -263,6 +272,18 @@ pub enum HotspotCmd {
         ssid: String,
     },
     Off,
+}
+
+#[derive(Subcommand)]
+pub enum CacheCmd {
+    /// 查看 DNS/邻居缓存统计
+    Status,
+    /// 清空 DNS 缓存
+    Flush,
+    /// 清空邻居缓存
+    FlushNeighbors,
+    /// 设置 DNS 缓存上限（0-65536，重启 resolved）
+    Size { size: u32 },
 }
 
 #[derive(Subcommand)]
@@ -1098,6 +1119,75 @@ fn net(cmd: NetCmd, json: bool) -> Result<()> {
                 Ok(())
             }
         },
+        NetCmd::Cache { cmd } => match cmd {
+            CacheCmd::Status => {
+                let stats = nm::cache_stats()?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&stats)?);
+                } else {
+                    println!("DNS 缓存");
+                    println!("  当前条目  {}", stats.current_size);
+                    println!("  命中      {}", stats.hits);
+                    println!("  未命中    {}", stats.misses);
+                    println!("  总事务    {}", stats.transactions);
+                    println!(
+                        "  DNS 服务器 {}",
+                        if stats.dns_servers.is_empty() {
+                            "-".to_string()
+                        } else {
+                            stats.dns_servers.join(", ")
+                        }
+                    );
+                    println!("邻居条目  {}", stats.neighbors);
+                }
+                Ok(())
+            }
+            CacheCmd::Flush => {
+                nm::flush_dns_cache()?;
+                println!("DNS 缓存已清空");
+                Ok(())
+            }
+            CacheCmd::FlushNeighbors => {
+                nm::flush_neighbor_cache()?;
+                println!("邻居缓存已清空");
+                Ok(())
+            }
+            CacheCmd::Size { size } => {
+                nm::set_dns_cache_size(size)?;
+                println!("DNS 缓存上限已设为 {size} 条");
+                Ok(())
+            }
+        },
+        NetCmd::Ping { host } => {
+            let output = nm::ping(&host)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "host": host,
+                        "output": output,
+                    }))?
+                );
+            } else {
+                println!("{output}");
+            }
+            Ok(())
+        }
+        NetCmd::Dns { domain } => {
+            let output = nm::dns_query(&domain)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "domain": domain,
+                        "output": output,
+                    }))?
+                );
+            } else {
+                println!("{output}");
+            }
+            Ok(())
+        }
     }
 }
 

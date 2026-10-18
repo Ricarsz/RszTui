@@ -216,6 +216,9 @@ impl FanEdit {
 pub enum InputAction {
     Wifi { ssid: String, key_mgmt: String },
     Hotspot,
+    Ping,
+    DnsLookup,
+    DnsCacheSize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -249,6 +252,8 @@ pub enum Pending {
     NetApply(IpForm),
     NetDelete(String),
     Radio(bool),
+    FlushDns,
+    FlushNeighbors,
     FanApply(usize),
     FanSave,
     FanDelete(usize),
@@ -318,6 +323,10 @@ pub struct App {
     pub wifi_enabled: Option<bool>,
     pub ip_form: Option<IpForm>,
     pub net_ipv4: Option<nm::Ipv4Settings>,
+    pub net_detail: Option<nm::DeviceDetail>,
+    net_detail_at: Instant,
+    pub cache_open: bool,
+    pub cache_stats: Option<nm::CacheStats>,
     pub services: Vec<crate::services::ServiceInfo>,
     pub service_sel: usize,
     pub snap: Snapshot,
@@ -396,6 +405,10 @@ impl App {
             wifi_enabled: None,
             ip_form: None,
             net_ipv4: None,
+            net_detail: None,
+            net_detail_at: Instant::now(),
+            cache_open: false,
+            cache_stats: None,
             services: Vec::new(),
             service_sel: 0,
             snap: Snapshot::default(),
@@ -503,6 +516,10 @@ impl App {
 
         if self.ip_form.is_some() {
             return self.handle_ip_form_key(key);
+        }
+
+        if self.cache_open {
+            return self.handle_cache_key(key);
         }
 
         match key.code {
@@ -676,6 +693,29 @@ impl App {
             InputAction::Hotspot => {
                 nm::hotspot(&value, "rsztui-hotspot")?;
                 self.status = "热点已开启：rsztui-hotspot".into();
+            }
+            InputAction::Ping => {
+                let output = nm::ping(&value)?;
+                self.modal = Some(Modal::Message {
+                    title: format!("Ping {value}"),
+                    body: output,
+                });
+            }
+            InputAction::DnsLookup => {
+                let output = nm::dns_query(&value)?;
+                self.modal = Some(Modal::Message {
+                    title: format!("DNS 查询 {value}"),
+                    body: output,
+                });
+            }
+            InputAction::DnsCacheSize => {
+                let size: u32 = value
+                    .trim()
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("缓存大小必须是数字"))?;
+                nm::set_dns_cache_size(size)?;
+                self.cache_stats = nm::cache_stats().ok();
+                self.status = format!("DNS 缓存上限已设为 {size} 条");
             }
         }
         self.status_err = false;
@@ -1142,13 +1182,33 @@ impl App {
     }
 
     fn refresh_net_detail(&mut self) {
-        self.net_ipv4 = if self.net_view == NetView::Connections {
-            self.connections
+        if self.net_view == NetView::Connections {
+            self.net_ipv4 = self
+                .connections
                 .get(self.net_sel)
-                .and_then(|c| nm::connection_ipv4(&c.name).ok())
+                .and_then(|c| nm::connection_ipv4(&c.name).ok());
+
+            let device = self
+                .connections
+                .get(self.net_sel)
+                .map(|c| c.device.clone())
+                .unwrap_or_default();
+            let cached = self
+                .net_detail
+                .as_ref()
+                .is_some_and(|detail| detail.device == device);
+            if !device.is_empty()
+                && !(cached && self.net_detail_at.elapsed() < Duration::from_secs(10))
+            {
+                self.net_detail = nm::device_detail(&device).ok();
+                self.net_detail_at = Instant::now();
+            } else if device.is_empty() {
+                self.net_detail = None;
+            }
         } else {
-            None
-        };
+            self.net_ipv4 = None;
+            self.net_detail = None;
+        }
     }
 
     fn rescan_wifi(&mut self, rescan: bool) -> Result<()> {
@@ -1215,6 +1275,36 @@ impl App {
                 );
             }
             KeyCode::Char('t') => self.toggle_hotspot(),
+            KeyCode::Char('c') => self.open_cache(),
+            KeyCode::Char('p') => {
+                let target = self
+                    .net_detail
+                    .as_ref()
+                    .map(|d| d.gateway.clone())
+                    .filter(|v| !v.is_empty())
+                    .or_else(|| {
+                        self.cache_stats
+                            .as_ref()
+                            .and_then(|c| c.dns_servers.first().cloned())
+                    })
+                    .unwrap_or_else(|| "1.1.1.1".into());
+                self.modal = Some(Modal::Input {
+                    title: "Ping 测试".into(),
+                    prompt: "目标 IP / 域名".into(),
+                    value: target,
+                    masked: false,
+                    action: InputAction::Ping,
+                });
+            }
+            KeyCode::Char('n') => {
+                self.modal = Some(Modal::Input {
+                    title: "DNS 查询".into(),
+                    prompt: "域名".into(),
+                    value: "example.com".into(),
+                    masked: false,
+                    action: InputAction::DnsLookup,
+                });
+            }
             KeyCode::Enter => self.net_enter()?,
             _ => {}
         }
@@ -1346,6 +1436,41 @@ impl App {
                 key_mgmt: key_mgmt.into(),
             },
         });
+        Ok(())
+    }
+
+    fn open_cache(&mut self) {
+        self.cache_stats = nm::cache_stats().ok();
+        self.cache_open = true;
+        self.status = "网络缓存：f 清空 DNS，F 清空邻居，e 设置上限".into();
+        self.status_err = false;
+    }
+
+    fn handle_cache_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => self.cache_open = false,
+            KeyCode::Char('f') => self.confirm(
+                "清空 DNS 缓存",
+                "清空 systemd-resolved 的 DNS 缓存？",
+                Pending::FlushDns,
+            ),
+            KeyCode::Char('F') => self.confirm(
+                "清空邻居缓存",
+                "清空内核 ARP/邻居缓存？",
+                Pending::FlushNeighbors,
+            ),
+            KeyCode::Char('e') => {
+                self.modal = Some(Modal::Input {
+                    title: "DNS 缓存上限".into(),
+                    prompt: "CacheSize（条，0-65536；重启 resolved 会短暂中断 DNS）".into(),
+                    value: "4096".into(),
+                    masked: false,
+                    action: InputAction::DnsCacheSize,
+                });
+            }
+            KeyCode::Char('r') => self.cache_stats = nm::cache_stats().ok(),
+            _ => {}
+        }
         Ok(())
     }
 
@@ -1624,6 +1749,16 @@ impl App {
                 self.fan_edit = None;
                 self.status = "已放弃风扇曲线修改".into();
             }
+            Pending::FlushDns => {
+                nm::flush_dns_cache()?;
+                self.cache_stats = nm::cache_stats().ok();
+                self.status = "DNS 缓存已清空".into();
+            }
+            Pending::FlushNeighbors => {
+                nm::flush_neighbor_cache()?;
+                self.cache_stats = nm::cache_stats().ok();
+                self.status = "邻居缓存已清空".into();
+            }
             Pending::Service { unit, action } => {
                 crate::services::apply(&unit, action)?;
                 self.deps = deps::check();
@@ -1736,7 +1871,7 @@ impl App {
                     .into_iter()
                     .filter(|c| c.kind != "loopback")
                     .collect();
-                self.vpns = nm::vpn_list().unwrap_or_default();
+                self.vpns = nm::vpn_list_from(&self.connections);
                 self.ssid = nm::active_ssid().unwrap_or(None);
                 self.wifi_enabled = nm::wifi_enabled().ok();
                 if self.net_view == NetView::Wifi
@@ -1746,6 +1881,9 @@ impl App {
                 }
                 self.net_sel = self.net_sel.min(self.net_len().saturating_sub(1));
                 self.refresh_net_detail();
+                if self.cache_open {
+                    self.cache_stats = nm::cache_stats().ok();
+                }
             }
             Tab::Services => {
                 self.services = crate::services::status_all();
@@ -1868,6 +2006,7 @@ fn help_text() -> String {
         "网络",
         "  v 切换 连接/Wi-Fi/VPN   j/k 选择   Enter 连接或编辑",
         "  u 激活   d 断开   x 删除   o Wi-Fi 开关   t 热点",
+        "  p Ping   n DNS 查询   c 网络缓存（DNS/邻居）",
         "  IPv4 编辑：Enter 切换方法/下一项，直接输入，a 应用",
         "",
         "说明",

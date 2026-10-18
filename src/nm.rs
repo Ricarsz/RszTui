@@ -2,6 +2,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -28,6 +29,11 @@ pub struct ConnectionInfo {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct WifiAp {
     pub ssid: String,
+    pub bssid: String,
+    pub mode: String,
+    pub chan: String,
+    pub freq: String,
+    pub rate: String,
     pub signal: u8,
     pub security: String,
     pub in_use: bool,
@@ -40,6 +46,31 @@ pub struct Ipv4Settings {
     pub gateway: String,
     pub dns: String,
     pub dot: i32,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DeviceDetail {
+    pub device: String,
+    pub kind: String,
+    pub state: String,
+    pub connection: String,
+    pub hwaddr: String,
+    pub mtu: String,
+    pub speed: String,
+    pub addresses: String,
+    pub gateway: String,
+    pub dns: String,
+    pub routes: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CacheStats {
+    pub current_size: u64,
+    pub hits: u64,
+    pub misses: u64,
+    pub transactions: u64,
+    pub dns_servers: Vec<String>,
+    pub neighbors: usize,
 }
 
 pub fn devices() -> Result<Vec<Device>> {
@@ -122,10 +153,14 @@ pub fn connections() -> Result<Vec<ConnectionInfo>> {
 }
 
 pub fn vpn_list() -> Result<Vec<ConnectionInfo>> {
-    Ok(connections()?
-        .into_iter()
+    Ok(vpn_list_from(&connections()?))
+}
+
+pub fn vpn_list_from(list: &[ConnectionInfo]) -> Vec<ConnectionInfo> {
+    list.iter()
         .filter(|c| c.kind.contains("vpn") || c.kind.contains("wireguard"))
-        .collect())
+        .cloned()
+        .collect()
 }
 
 pub fn connection_up(name: &str) -> Result<()> {
@@ -149,7 +184,7 @@ pub fn wifi_scan(rescan: bool) -> Result<Vec<WifiAp>> {
         &[
             "-t",
             "-f",
-            "IN-USE,SSID,SIGNAL,SECURITY",
+            "IN-USE,SSID,BSSID,MODE,CHAN,FREQ,RATE,SIGNAL,SECURITY",
             "device",
             "wifi",
             "list",
@@ -161,35 +196,238 @@ pub fn wifi_scan(rescan: bool) -> Result<Vec<WifiAp>> {
     let mut result: Vec<WifiAp> = Vec::new();
     for line in out.lines() {
         let parts = util::split_nmcli(line);
-        if parts.len() < 4 {
+        if parts.len() < 9 {
             continue;
         }
         let ssid = parts[1].clone();
         if ssid.is_empty() {
             continue;
         }
-        let signal = parts[2].parse::<u8>().unwrap_or(0);
-        let security = parts[3].trim().to_string();
-        let in_use = parts[0].contains('*');
+        let ap = WifiAp {
+            ssid,
+            bssid: parts[2].clone(),
+            mode: parts[3].clone(),
+            chan: parts[4].clone(),
+            freq: parts[5].clone(),
+            rate: parts[6].clone(),
+            signal: parts[7].parse::<u8>().unwrap_or(0),
+            security: parts[8].trim().to_string(),
+            in_use: parts[0].contains('*') || parts[0].eq_ignore_ascii_case("yes"),
+        };
 
-        if let Some(existing) = result.iter_mut().find(|ap| ap.ssid == ssid) {
-            if signal > existing.signal {
-                existing.signal = signal;
-                existing.security = security;
+        if let Some(existing) = result.iter_mut().find(|item| item.ssid == ap.ssid) {
+            existing.in_use |= ap.in_use;
+            if ap.signal > existing.signal {
+                *existing = ap;
             }
-            existing.in_use |= in_use;
         } else {
-            result.push(WifiAp {
-                ssid,
-                signal,
-                security,
-                in_use,
-            });
+            result.push(ap);
         }
     }
 
     result.sort_by(|a, b| b.signal.cmp(&a.signal).then_with(|| a.ssid.cmp(&b.ssid)));
     Ok(result)
+}
+
+pub fn device_detail(device: &str) -> Result<DeviceDetail> {
+    if device.is_empty() {
+        return Ok(DeviceDetail::default());
+    }
+    let out = util::run(
+        "nmcli",
+        &[
+            "-t",
+            "-f",
+            "GENERAL.DEVICE,GENERAL.TYPE,GENERAL.STATE,GENERAL.CONNECTION,GENERAL.HWADDR,GENERAL.MTU,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS,IP4.ROUTE",
+            "device",
+            "show",
+            device,
+        ],
+    )?;
+
+    let mut detail = DeviceDetail {
+        device: device.to_string(),
+        ..DeviceDetail::default()
+    };
+    let mut addresses = Vec::new();
+    let mut dns = Vec::new();
+    let mut routes = Vec::new();
+
+    for line in out.lines() {
+        let parts = util::split_nmcli(line);
+        if parts.len() < 2 {
+            continue;
+        }
+        let key = parts[0].as_str();
+        let value = parts[1..].join(":").trim().to_string();
+        if key.starts_with("GENERAL.TYPE") {
+            detail.kind = value;
+        } else if key.starts_with("GENERAL.STATE") {
+            detail.state = value;
+        } else if key.starts_with("GENERAL.CONNECTION") {
+            detail.connection = value;
+        } else if key.starts_with("GENERAL.HWADDR") {
+            detail.hwaddr = value;
+        } else if key.starts_with("GENERAL.MTU") {
+            detail.mtu = value;
+        } else if key.starts_with("IP4.ADDRESS") {
+            if !value.is_empty() {
+                addresses.push(value);
+            }
+        } else if key.starts_with("IP4.GATEWAY") {
+            detail.gateway = value;
+        } else if key.starts_with("IP4.DNS") && !value.is_empty() {
+            dns.push(value);
+        } else if key.starts_with("IP4.ROUTE") && !value.is_empty() {
+            routes.push(value);
+        }
+    }
+
+    detail.addresses = addresses.join(", ");
+    detail.dns = dns.join(", ");
+    detail.routes = routes.join(" | ");
+    detail.speed = fs::read_to_string(format!("/sys/class/net/{device}/speed"))
+        .map(|v| v.trim().to_string())
+        .ok()
+        .filter(|v| !v.is_empty() && v != "-1")
+        .unwrap_or_default();
+    Ok(detail)
+}
+
+pub fn cache_stats() -> Result<CacheStats> {
+    let text = util::run("resolvectl", &["statistics"])?;
+    let mut stats = parse_cache_stats(&text);
+    stats.dns_servers = dns_servers();
+    stats.neighbors = neighbor_count();
+    Ok(stats)
+}
+
+fn parse_cache_stats(text: &str) -> CacheStats {
+    let value = |key: &str| {
+        text.lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.trim().eq_ignore_ascii_case(key) {
+                    value.trim().parse::<u64>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0)
+    };
+    CacheStats {
+        current_size: value("Current Cache Size"),
+        hits: value("Cache Hits"),
+        misses: value("Cache Misses"),
+        transactions: value("Total Transactions"),
+        ..CacheStats::default()
+    }
+}
+
+fn dns_servers() -> Vec<String> {
+    let Ok(out) = util::run("resolvectl", &["dns"]) else {
+        return Vec::new();
+    };
+    let mut result: Vec<String> = Vec::new();
+    for line in out.lines() {
+        let Some((_, rest)) = line.split_once(':') else {
+            continue;
+        };
+        for token in rest.split_whitespace() {
+            if (token.contains('.') || token.contains(':'))
+                && !token.contains('(')
+                && !result.iter().any(|v| v == token)
+            {
+                result.push(token.to_string());
+            }
+        }
+    }
+    result
+}
+
+fn neighbor_count() -> usize {
+    util::run("ip", &["neigh", "show"])
+        .map(|out| out.lines().filter(|line| line.contains(" dev ")).count())
+        .unwrap_or(0)
+}
+
+pub fn flush_dns_cache() -> Result<()> {
+    util::run("resolvectl", &["flush-caches"])?;
+    Ok(())
+}
+
+pub fn flush_neighbor_cache() -> Result<()> {
+    util::run("ip", &["neigh", "flush", "all"])?;
+    Ok(())
+}
+
+pub fn set_dns_cache_size(size: u32) -> Result<()> {
+    if size > 65536 {
+        bail!("缓存条目上限不能超过 65536");
+    }
+    let dir = Path::new("/etc/systemd/resolved.conf.d");
+    fs::create_dir_all(dir).with_context(|| format!("无法创建 {}", dir.display()))?;
+    let path = dir.join("rsztui-cache.conf");
+    fs::write(&path, format!("[Resolve]\nCacheSize={size}\n"))
+        .with_context(|| format!("无法写入 {}", path.display()))?;
+    util::run("systemctl", &["restart", "systemd-resolved"])?;
+    Ok(())
+}
+
+pub fn ping(host: &str) -> Result<String> {
+    let host = validate_host(host)?;
+    let mut command = Command::new("ping");
+    if host.contains(':') {
+        command.arg("-6");
+    }
+    let output = command
+        .args(["-c", "4", "-W", "1", &host])
+        .env("LC_ALL", "C")
+        .env("LANG", "C")
+        .output()
+        .with_context(|| "无法执行 ping，请确认 iputils 已安装")?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if text.trim().is_empty() {
+        bail!("ping 没有输出");
+    }
+    Ok(text.trim().to_string())
+}
+
+pub fn dns_query(domain: &str) -> Result<String> {
+    let domain = validate_host(domain)?;
+    let output = Command::new("resolvectl")
+        .args(["query", &domain])
+        .env("LC_ALL", "C")
+        .env("LANG", "C")
+        .output()
+        .with_context(|| "无法执行 resolvectl")?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if text.trim().is_empty() {
+        bail!("resolvectl 没有输出");
+    }
+    Ok(text.trim().to_string())
+}
+
+fn validate_host(value: &str) -> Result<String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 253 {
+        bail!("主机名/域名不合法");
+    }
+    if !value
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b':'))
+    {
+        bail!("主机名/域名不合法");
+    }
+    Ok(value.to_string())
 }
 
 pub fn find_connection(name: &str) -> Result<Option<ConnectionInfo>> {
@@ -218,32 +456,54 @@ fn get_field(name: &str, field: &str) -> Result<String> {
     Ok(out.trim().to_string())
 }
 
-fn get_multi(name: &str, field: &str) -> Result<String> {
-    let out = util::run("nmcli", &["-g", field, "connection", "show", name])?;
-    Ok(out
-        .lines()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .collect::<Vec<_>>()
-        .join(", "))
-}
-
 pub fn connection_ipv4(name: &str) -> Result<Ipv4Settings> {
-    let dot_raw = get_field(name, "connection.dns-over-tls").unwrap_or_default();
-    let dot = match dot_raw.as_str() {
-        "no" | "0" => 0,
-        "opportunistic" | "1" => 1,
-        "yes" | "2" => 2,
-        _ => -1,
-    };
+    let out = util::run(
+        "nmcli",
+        &[
+            "-t",
+            "-f",
+            "ipv4.method,ipv4.addresses,ipv4.gateway,ipv4.dns,connection.dns-over-tls",
+            "connection",
+            "show",
+            name,
+        ],
+    )?;
 
-    Ok(Ipv4Settings {
-        method: get_field(name, "ipv4.method").unwrap_or_else(|_| "auto".into()),
-        addresses: get_multi(name, "ipv4.addresses").unwrap_or_default(),
-        gateway: get_field(name, "ipv4.gateway").unwrap_or_default(),
-        dns: get_multi(name, "ipv4.dns").unwrap_or_default(),
-        dot,
-    })
+    let mut settings = Ipv4Settings {
+        method: "auto".into(),
+        ..Ipv4Settings::default()
+    };
+    let mut addresses = Vec::new();
+    let mut dns = Vec::new();
+
+    for line in out.lines() {
+        let parts = util::split_nmcli(line);
+        if parts.len() < 2 {
+            continue;
+        }
+        let key = parts[0].as_str();
+        let value = parts[1..].join(":").trim().to_string();
+        if key.starts_with("ipv4.method") {
+            settings.method = value;
+        } else if key.starts_with("ipv4.addresses") && !value.is_empty() {
+            addresses.push(value);
+        } else if key.starts_with("ipv4.gateway") {
+            settings.gateway = value;
+        } else if key.starts_with("ipv4.dns") && !value.is_empty() {
+            dns.push(value);
+        } else if key.starts_with("connection.dns-over-tls") {
+            settings.dot = match value.as_str() {
+                "no" | "0" => 0,
+                "opportunistic" | "1" => 1,
+                "yes" | "2" => 2,
+                _ => -1,
+            };
+        }
+    }
+
+    settings.addresses = addresses.join(", ");
+    settings.dns = dns.join(", ");
+    Ok(settings)
 }
 
 pub fn apply_ipv4(name: &str, settings: &Ipv4Settings) -> Result<()> {
@@ -473,6 +733,24 @@ fn new_uuid() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_cache_stats() {
+        let text = "Transactions\n  Current Transactions: 0\n    Total Transactions: 20823\nCache\n  Current Cache Size: 15\n    Cache Hits: 5036\n  Cache Misses: 15759\n";
+        let stats = parse_cache_stats(text);
+        assert_eq!(stats.current_size, 15);
+        assert_eq!(stats.hits, 5036);
+        assert_eq!(stats.misses, 15759);
+        assert_eq!(stats.transactions, 20823);
+    }
+
+    #[test]
+    fn validates_hosts() {
+        assert!(validate_host("1.1.1.1").is_ok());
+        assert!(validate_host("example.com").is_ok());
+        assert!(validate_host("bad host").is_err());
+        assert!(validate_host("a/b").is_err());
+    }
 
     #[test]
     fn checks_ipv4() {
