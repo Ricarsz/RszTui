@@ -430,6 +430,44 @@ fn validate_host(value: &str) -> Result<String> {
     Ok(value.to_string())
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct NetworkSnapshot {
+    pub devices: Vec<Device>,
+    pub connections: Vec<ConnectionInfo>,
+    pub vpns: Vec<ConnectionInfo>,
+    pub ssid: Option<String>,
+    pub wifi_enabled: Option<bool>,
+    pub wifi: Vec<WifiAp>,
+    pub wifi_scanned: bool,
+}
+
+pub fn network_snapshot(include_wifi: bool, force_scan: bool) -> Result<NetworkSnapshot> {
+    let devices = devices()?;
+    let connections: Vec<ConnectionInfo> = connections()?
+        .into_iter()
+        .filter(|c| c.kind != "loopback")
+        .collect();
+    let vpns = vpn_list_from(&connections);
+    let wifi_enabled = wifi_enabled().ok();
+
+    let (ssid, wifi, wifi_scanned) = if include_wifi {
+        let wifi = wifi_scan(force_scan).unwrap_or_default();
+        (active_ssid().ok().flatten(), wifi, true)
+    } else {
+        (None, Vec::new(), false)
+    };
+
+    Ok(NetworkSnapshot {
+        devices,
+        connections,
+        vpns,
+        ssid,
+        wifi_enabled,
+        wifi,
+        wifi_scanned,
+    })
+}
+
 pub fn find_connection(name: &str) -> Result<Option<ConnectionInfo>> {
     Ok(connections()?.into_iter().find(|c| c.name == name))
 }

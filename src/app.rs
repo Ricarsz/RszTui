@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
@@ -221,7 +222,7 @@ pub enum InputAction {
     DnsCacheSize,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseAction {
     Tab(Tab),
     Profile(usize),
@@ -231,6 +232,17 @@ pub enum MouseAction {
     FanPoint(usize),
     Net(usize),
     Service(usize),
+    Gpu(usize),
+    Color(usize),
+    CacheFlushDns,
+    CacheFlushNeighbors,
+    CacheEditSize,
+    CacheRefresh,
+    CacheClose,
+    NetPing,
+    NetDns,
+    NetCache,
+    NetRefresh,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -289,6 +301,13 @@ pub enum Modal {
     },
 }
 
+struct CoreSnapshot {
+    profile: Result<ProfileState, String>,
+    battery: Result<BatteryInfo, String>,
+    attrs: Result<Vec<asus::Attr>, String>,
+    tuning: bool,
+}
+
 pub struct App {
     pub cfg: Config,
     pub deps: deps::Report,
@@ -327,6 +346,16 @@ pub struct App {
     net_detail_at: Instant,
     pub cache_open: bool,
     pub cache_stats: Option<nm::CacheStats>,
+    net_tx: Sender<Result<nm::NetworkSnapshot, String>>,
+    net_rx: Receiver<Result<nm::NetworkSnapshot, String>>,
+    pub net_loading: bool,
+    net_refresh_again: bool,
+    net_force_scan: bool,
+    core_tx: Sender<CoreSnapshot>,
+    core_rx: Receiver<CoreSnapshot>,
+    core_loading: bool,
+    core_refresh_again: bool,
+    last_mouse: Option<(Instant, MouseAction)>,
     pub services: Vec<crate::services::ServiceInfo>,
     pub service_sel: usize,
     pub snap: Snapshot,
@@ -370,6 +399,8 @@ pub fn run(cfg: Config, report: deps::Report) -> Result<()> {
 
 impl App {
     pub fn new(cfg: Config, report: deps::Report) -> Self {
+        let (net_tx, net_rx) = mpsc::channel();
+        let (core_tx, core_rx) = mpsc::channel();
         let tab = Tab::from_index(cfg.ui.last_tab);
         let mut app = Self {
             cfg,
@@ -409,6 +440,16 @@ impl App {
             net_detail_at: Instant::now(),
             cache_open: false,
             cache_stats: None,
+            net_tx,
+            net_rx,
+            net_loading: false,
+            net_refresh_again: false,
+            core_tx,
+            core_rx,
+            core_loading: false,
+            core_refresh_again: false,
+            net_force_scan: false,
+            last_mouse: None,
             services: Vec::new(),
             service_sel: 0,
             snap: Snapshot::default(),
@@ -429,7 +470,7 @@ impl App {
         };
 
         app.refresh_fast();
-        app.refresh_core();
+        app.refresh_core_sync();
         app.refresh_current_tab();
         app.tuning = asus::profile_tuning().unwrap_or(false);
         if let Some(profile) = app.profile {
@@ -479,6 +520,13 @@ impl App {
                     }
                     _ => {}
                 }
+            }
+
+            if self.poll_net() {
+                dirty = true;
+            }
+            if self.poll_core() {
+                dirty = true;
             }
 
             if self.last_tick.elapsed() >= Duration::from_secs(1) {
@@ -594,7 +642,12 @@ impl App {
                         .map(|target| target.action)
                 };
                 if let Some(action) = action {
-                    self.activate_mouse(action);
+                    let now = Instant::now();
+                    let double = self.last_mouse.as_ref().is_some_and(|(time, last)| {
+                        *last == action && now.duration_since(*time) < Duration::from_millis(450)
+                    });
+                    self.last_mouse = Some((now, action));
+                    self.activate_mouse(action, double)?;
                 }
             }
             MouseEventKind::ScrollUp => self.scroll(-1)?,
@@ -616,15 +669,34 @@ impl App {
         self.handle_tab_key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
-    fn activate_mouse(&mut self, action: MouseAction) {
+    fn activate_mouse(&mut self, action: MouseAction, double: bool) -> Result<()> {
         match action {
             MouseAction::Tab(tab) => self.switch_tab(tab),
             MouseAction::Profile(index) => {
                 self.perf_focus = PerfFocus::Profiles;
                 self.profile_sel = index.min(Profile::ALL.len().saturating_sub(1));
+                if double {
+                    let profile = Profile::ALL[self.profile_sel];
+                    self.confirm(
+                        "切换性能模式",
+                        format!("切换到{}模式？", profile.zh()),
+                        Pending::Profile(profile),
+                    );
+                }
             }
             MouseAction::PerfPreset(index) => {
                 self.preset_sel = index.min(self.cfg.power_presets.len().saturating_sub(1));
+                if double && let Some(preset) = self.cfg.preset(self.preset_sel) {
+                    self.confirm(
+                        "套用功耗预设",
+                        format!(
+                            "套用「{}」预设到 {} 模式？",
+                            preset.name,
+                            preset.profile.zh()
+                        ),
+                        Pending::Preset(self.preset_sel),
+                    );
+                }
             }
             MouseAction::PowerField(index) => {
                 self.perf_focus = PerfFocus::Power;
@@ -632,6 +704,13 @@ impl App {
             }
             MouseAction::FanPreset(index) => {
                 self.fan_sel = index.min(self.cfg.fan_presets.len().saturating_sub(1));
+                if double && let Some(preset) = self.cfg.fan_presets.get(self.fan_sel).cloned() {
+                    self.confirm(
+                        "套用风扇预设",
+                        format!("把「{}」应用到 {} 模式？", preset.name, preset.profile.zh()),
+                        Pending::FanApply(self.fan_sel),
+                    );
+                }
             }
             MouseAction::FanPoint(index) => {
                 if let Some(edit) = self.fan_edit.as_mut()
@@ -643,11 +722,69 @@ impl App {
             MouseAction::Net(index) => {
                 self.net_sel = index.min(self.net_len().saturating_sub(1));
                 self.refresh_net_detail();
+                if double {
+                    self.net_enter()?;
+                }
             }
             MouseAction::Service(index) => {
                 self.service_sel = index.min(self.services.len().saturating_sub(1));
             }
+            MouseAction::Gpu(index) => {
+                self.gpu_sel = index.min(GpuMode::ALL.len().saturating_sub(1));
+                if double {
+                    let mode = GpuMode::ALL[self.gpu_sel];
+                    self.confirm(
+                        "切换 GPU 模式",
+                        format!("将 GPU 模式设为{}？修改后需要重启。", mode.zh()),
+                        Pending::Gpu(mode),
+                    );
+                }
+            }
+            MouseAction::Color(index) => {
+                self.aura_color = index.min(AURA_COLORS.len().saturating_sub(1));
+                if double {
+                    let (name, hex) = AURA_COLORS[self.aura_color];
+                    asus::aura_static(hex)?;
+                    self.refresh_current_tab();
+                    self.status = format!("灯效：静态 {name}");
+                    self.status_err = false;
+                }
+            }
+            MouseAction::CacheFlushDns => self.confirm(
+                "清空 DNS 缓存",
+                "清空 systemd-resolved 的 DNS 缓存？",
+                Pending::FlushDns,
+            ),
+            MouseAction::CacheFlushNeighbors => self.confirm(
+                "清空邻居缓存",
+                "清空内核 ARP/邻居缓存？",
+                Pending::FlushNeighbors,
+            ),
+            MouseAction::CacheEditSize => {
+                self.modal = Some(Modal::Input {
+                    title: "DNS 缓存上限".into(),
+                    prompt: "CacheSize（条，0-65536；重启 resolved 会短暂中断 DNS）".into(),
+                    value: "4096".into(),
+                    masked: false,
+                    action: InputAction::DnsCacheSize,
+                });
+            }
+            MouseAction::CacheRefresh => {
+                self.cache_stats = nm::cache_stats().ok();
+            }
+            MouseAction::CacheClose => {
+                self.cache_open = false;
+            }
+            MouseAction::NetPing => self.open_ping_input(),
+            MouseAction::NetDns => self.open_dns_input(),
+            MouseAction::NetCache => self.open_cache(),
+            MouseAction::NetRefresh => {
+                self.request_net_snapshot();
+                self.status = "正在刷新网络…".into();
+                self.status_err = false;
+            }
         }
+        Ok(())
     }
 
     fn handle_modal_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -1212,24 +1349,67 @@ impl App {
     }
 
     fn rescan_wifi(&mut self, rescan: bool) -> Result<()> {
-        match nm::wifi_scan(rescan) {
-            Ok(list) => {
-                self.wifi = list;
-                self.net_sel = self.net_sel.min(self.wifi.len().saturating_sub(1));
-                self.status = if rescan {
-                    format!("扫描完成，发现 {} 个 SSID", self.wifi.len())
-                } else {
-                    "Wi-Fi 列表已刷新".into()
-                };
-                self.status_err = false;
-                Ok(())
-            }
-            Err(err) => {
-                self.status = format!("Wi-Fi 扫描失败：{err:#}");
-                self.status_err = true;
-                Ok(())
+        self.net_force_scan |= rescan;
+        self.request_net_snapshot();
+        self.status = if rescan {
+            "正在扫描 Wi-Fi…".into()
+        } else {
+            "正在刷新网络…".into()
+        };
+        self.status_err = false;
+        Ok(())
+    }
+
+    fn request_net_snapshot(&mut self) {
+        if self.net_loading {
+            self.net_refresh_again = true;
+            return;
+        }
+        self.net_loading = true;
+        let include_wifi = self.net_view == NetView::Wifi;
+        let force_scan = self.net_force_scan;
+        self.net_force_scan = false;
+        let tx = self.net_tx.clone();
+        std::thread::spawn(move || {
+            let result =
+                nm::network_snapshot(include_wifi, force_scan).map_err(|err| format!("{err:#}"));
+            let _ = tx.send(result);
+        });
+    }
+
+    fn poll_net(&mut self) -> bool {
+        let mut updated = false;
+        loop {
+            match self.net_rx.try_recv() {
+                Ok(Ok(snapshot)) => {
+                    self.net_loading = false;
+                    self.devices = snapshot.devices;
+                    self.connections = snapshot.connections;
+                    self.vpns = snapshot.vpns;
+                    self.wifi_enabled = snapshot.wifi_enabled;
+                    if snapshot.wifi_scanned {
+                        self.wifi = snapshot.wifi;
+                        self.ssid = snapshot.ssid;
+                    }
+                    self.net_sel = self.net_sel.min(self.net_len().saturating_sub(1));
+                    self.refresh_net_detail();
+                    updated = true;
+                }
+                Ok(Err(err)) => {
+                    self.net_loading = false;
+                    self.status = format!("网络刷新失败：{err}");
+                    self.status_err = true;
+                    updated = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => break,
             }
         }
+        if self.net_refresh_again {
+            self.net_refresh_again = false;
+            self.request_net_snapshot();
+        }
+        updated
     }
 
     fn selected_connection(&self) -> Option<nm::ConnectionInfo> {
@@ -1276,35 +1456,8 @@ impl App {
             }
             KeyCode::Char('t') => self.toggle_hotspot(),
             KeyCode::Char('c') => self.open_cache(),
-            KeyCode::Char('p') => {
-                let target = self
-                    .net_detail
-                    .as_ref()
-                    .map(|d| d.gateway.clone())
-                    .filter(|v| !v.is_empty())
-                    .or_else(|| {
-                        self.cache_stats
-                            .as_ref()
-                            .and_then(|c| c.dns_servers.first().cloned())
-                    })
-                    .unwrap_or_else(|| "1.1.1.1".into());
-                self.modal = Some(Modal::Input {
-                    title: "Ping 测试".into(),
-                    prompt: "目标 IP / 域名".into(),
-                    value: target,
-                    masked: false,
-                    action: InputAction::Ping,
-                });
-            }
-            KeyCode::Char('n') => {
-                self.modal = Some(Modal::Input {
-                    title: "DNS 查询".into(),
-                    prompt: "域名".into(),
-                    value: "example.com".into(),
-                    masked: false,
-                    action: InputAction::DnsLookup,
-                });
-            }
+            KeyCode::Char('p') => self.open_ping_input(),
+            KeyCode::Char('n') => self.open_dns_input(),
             KeyCode::Enter => self.net_enter()?,
             _ => {}
         }
@@ -1437,6 +1590,37 @@ impl App {
             },
         });
         Ok(())
+    }
+
+    fn open_ping_input(&mut self) {
+        let target = self
+            .net_detail
+            .as_ref()
+            .map(|d| d.gateway.clone())
+            .filter(|v| !v.is_empty())
+            .or_else(|| {
+                self.cache_stats
+                    .as_ref()
+                    .and_then(|c| c.dns_servers.first().cloned())
+            })
+            .unwrap_or_else(|| "1.1.1.1".into());
+        self.modal = Some(Modal::Input {
+            title: "Ping 测试".into(),
+            prompt: "目标 IP / 域名".into(),
+            value: target,
+            masked: false,
+            action: InputAction::Ping,
+        });
+    }
+
+    fn open_dns_input(&mut self) {
+        self.modal = Some(Modal::Input {
+            title: "DNS 查询".into(),
+            prompt: "域名".into(),
+            value: "example.com".into(),
+            masked: false,
+            action: InputAction::DnsLookup,
+        });
     }
 
     fn open_cache(&mut self) {
@@ -1794,11 +1978,81 @@ impl App {
     }
 
     pub fn refresh_slow(&mut self) {
-        self.refresh_core();
+        self.request_core();
         self.refresh_current_tab();
     }
 
-    fn refresh_core(&mut self) {
+    fn request_core(&mut self) {
+        if self.core_loading {
+            self.core_refresh_again = true;
+            return;
+        }
+        self.core_loading = true;
+        let tx = self.core_tx.clone();
+        std::thread::spawn(move || {
+            let snapshot = CoreSnapshot {
+                profile: asus::profile_get().map_err(|err| format!("{err:#}")),
+                battery: asus::battery_info().map_err(|err| format!("{err:#}")),
+                attrs: asus::armoury().map_err(|err| format!("{err:#}")),
+                tuning: asus::profile_tuning().unwrap_or(false),
+            };
+            let _ = tx.send(snapshot);
+        });
+    }
+
+    fn poll_core(&mut self) -> bool {
+        let mut updated = false;
+        loop {
+            match self.core_rx.try_recv() {
+                Ok(snapshot) => {
+                    self.core_loading = false;
+                    let mut errors = Vec::new();
+                    match snapshot.profile {
+                        Ok(profile) => self.profile = Some(profile),
+                        Err(err) => errors.push(format!("性能模式：{err}")),
+                    }
+                    match snapshot.battery {
+                        Ok(info) => {
+                            if !self.limit_dirty
+                                && let Some(limit) = info.limit
+                            {
+                                self.limit_edit = limit;
+                            }
+                            self.battery = info;
+                        }
+                        Err(err) => errors.push(format!("电池：{err}")),
+                    }
+                    match snapshot.attrs {
+                        Ok(attrs) => {
+                            self.gpu_mode = asus::gpu_mode(&attrs);
+                            if !self.power_dirty {
+                                self.power = asus::power_fields(&attrs);
+                                self.power_sel =
+                                    self.power_sel.min(self.power.len().saturating_sub(1));
+                            }
+                            self.attrs = attrs;
+                        }
+                        Err(err) => errors.push(format!("功耗：{err}")),
+                    }
+                    self.tuning = snapshot.tuning;
+                    if !errors.is_empty() {
+                        self.status = format!("刷新失败：{}", errors.join("；"));
+                        self.status_err = true;
+                    }
+                    updated = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => break,
+            }
+        }
+        if self.core_refresh_again {
+            self.core_refresh_again = false;
+            self.request_core();
+        }
+        updated
+    }
+
+    fn refresh_core_sync(&mut self) {
         let mut errors = Vec::new();
 
         match asus::profile_get() {
@@ -1865,22 +2119,7 @@ impl App {
                 }
             },
             Tab::Network => {
-                self.devices = nm::devices().unwrap_or_default();
-                self.connections = nm::connections()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|c| c.kind != "loopback")
-                    .collect();
-                self.vpns = nm::vpn_list_from(&self.connections);
-                self.ssid = nm::active_ssid().unwrap_or(None);
-                self.wifi_enabled = nm::wifi_enabled().ok();
-                if self.net_view == NetView::Wifi
-                    && let Ok(list) = nm::wifi_scan(false)
-                {
-                    self.wifi = list;
-                }
-                self.net_sel = self.net_sel.min(self.net_len().saturating_sub(1));
-                self.refresh_net_detail();
+                self.request_net_snapshot();
                 if self.cache_open {
                     self.cache_stats = nm::cache_stats().ok();
                 }

@@ -600,6 +600,11 @@ fn draw_gpu_picker(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut lines = Vec::new();
     for (index, mode) in GpuMode::ALL.iter().enumerate() {
+        record_mouse(
+            app,
+            Rect::new(inner.x, inner.y + index as u16, inner.width, 1),
+            MouseAction::Gpu(index),
+        );
         let selected = index == app.gpu_sel;
         let current = app.gpu_mode == Some(*mode);
         let marker = if selected { "▶" } else { " " };
@@ -1210,6 +1215,16 @@ fn draw_lighting_colors(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines = Vec::new();
     let mut row = Vec::new();
     for (index, (name, hex)) in AURA_COLORS.iter().enumerate() {
+        record_mouse(
+            app,
+            Rect::new(
+                inner.x + (index % 3) as u16 * 10,
+                inner.y + (index / 3) as u16,
+                10,
+                1,
+            ),
+            MouseAction::Color(index),
+        );
         let selected = index == app.aura_color;
         row.push(Span::styled(
             format!(" {} ", if selected { "▶" } else { " " }),
@@ -1352,6 +1367,11 @@ fn draw_network(frame: &mut Frame, area: Rect, app: &App) {
         ),
         if nm::hotspot_active() {
             Span::styled("   热点已开启", Style::new().fg(WARN))
+        } else {
+            Span::raw("")
+        },
+        if app.net_loading {
+            Span::styled("   刷新中…", Style::new().fg(WARN))
         } else {
             Span::raw("")
         },
@@ -1642,9 +1662,27 @@ fn draw_net_details(frame: &mut Frame, area: Rect, app: &App) {
 
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        " v 视图   o 无线   t 热点   p Ping   n DNS   c 缓存",
+        " v 视图   o 无线   t 热点",
         Style::new().fg(DIM),
     )));
+
+    let bar_y = inner.y + lines.len() as u16;
+    if bar_y < inner.bottom() {
+        for (offset, width, action) in [
+            (0, 8, MouseAction::NetPing),
+            (8, 8, MouseAction::NetDns),
+            (16, 10, MouseAction::NetCache),
+            (26, 10, MouseAction::NetRefresh),
+        ] {
+            record_mouse(app, Rect::new(inner.x + offset, bar_y, width, 1), action);
+        }
+        lines.push(Line::from(vec![
+            Span::styled(" [Ping]", Style::new().fg(ACCENT)),
+            Span::styled(" [DNS]", Style::new().fg(ACCENT)),
+            Span::styled(" [缓存]", Style::new().fg(ACCENT)),
+            Span::styled(" [刷新]", Style::new().fg(ACCENT)),
+        ]));
+    }
 
     frame.render_widget(
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
@@ -1976,14 +2014,49 @@ fn draw_cache_modal(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     lines.push(Line::raw(""));
+
+    let y = inner.y + lines.len() as u16;
+    record_mouse(
+        app,
+        Rect::new(inner.x, y, inner.width, 1),
+        MouseAction::CacheFlushDns,
+    );
     lines.push(Line::from(Span::styled(
-        " f 清空 DNS 缓存   F 清空邻居缓存   r 刷新",
+        " [f] 清空 DNS 缓存",
         Style::new().fg(DIM),
     )));
+    record_mouse(
+        app,
+        Rect::new(inner.x, y + 1, inner.width, 1),
+        MouseAction::CacheFlushNeighbors,
+    );
     lines.push(Line::from(Span::styled(
-        " e 修改 DNS 缓存上限（重启 resolved）   Esc 关闭",
+        " [F] 清空邻居缓存",
         Style::new().fg(DIM),
     )));
+    record_mouse(
+        app,
+        Rect::new(inner.x, y + 2, inner.width, 1),
+        MouseAction::CacheEditSize,
+    );
+    lines.push(Line::from(Span::styled(
+        " [e] 修改 DNS 缓存上限（重启 resolved）",
+        Style::new().fg(DIM),
+    )));
+    record_mouse(
+        app,
+        Rect::new(inner.x, y + 3, 12, 1),
+        MouseAction::CacheRefresh,
+    );
+    record_mouse(
+        app,
+        Rect::new(inner.x + 12, y + 3, 12, 1),
+        MouseAction::CacheClose,
+    );
+    lines.push(Line::from(vec![
+        Span::styled(" [r] 刷新统计", Style::new().fg(DIM)),
+        Span::styled("   [Esc] 关闭", Style::new().fg(DIM)),
+    ]));
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         " 修改缓存上限会写入 /etc/systemd/resolved.conf.d/rsztui-cache.conf",
