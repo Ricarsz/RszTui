@@ -359,6 +359,8 @@ pub struct App {
     pub net_loading: bool,
     net_refresh_again: bool,
     net_force_scan: bool,
+    last_net_header: Instant,
+    pub hover: Option<MouseAction>,
     core_tx: Sender<CoreSnapshot>,
     core_rx: Receiver<CoreSnapshot>,
     core_loading: bool,
@@ -457,6 +459,8 @@ impl App {
             core_loading: false,
             core_refresh_again: false,
             net_force_scan: false,
+            last_net_header: Instant::now(),
+            hover: None,
             last_mouse: None,
             services: Vec::new(),
             service_sel: 0,
@@ -480,6 +484,7 @@ impl App {
         app.refresh_fast();
         app.refresh_core_sync();
         app.refresh_current_tab();
+        app.request_net_snapshot();
         app.tuning = asus::profile_tuning().unwrap_or(false);
         if let Some(profile) = app.profile {
             app.profile_sel = Profile::ALL
@@ -520,11 +525,15 @@ impl App {
                         dirty = true;
                     }
                     Event::Mouse(mouse) => {
+                        let moved = matches!(mouse.kind, MouseEventKind::Moved);
+                        let hover_before = self.hover;
                         if let Err(err) = self.handle_mouse(mouse) {
                             self.status = format!("错误：{err:#}");
                             self.status_err = true;
                         }
-                        dirty = true;
+                        if !moved || self.hover != hover_before {
+                            dirty = true;
+                        }
                     }
                     _ => {}
                 }
@@ -655,15 +664,12 @@ impl App {
         }
 
         match mouse.kind {
+            MouseEventKind::Moved => {
+                self.hover = self.mouse_action_at(mouse.column, mouse.row);
+            }
             MouseEventKind::Down(MouseButton::Left) => {
-                let action = {
-                    let targets = self.mouse_targets.borrow();
-                    targets
-                        .iter()
-                        .rev()
-                        .find(|target| point_in(target.rect, mouse.column, mouse.row))
-                        .map(|target| target.action)
-                };
+                let action = self.mouse_action_at(mouse.column, mouse.row);
+                self.hover = action;
                 if let Some(action) = action {
                     let now = Instant::now();
                     let double = self.last_mouse.as_ref().is_some_and(|(time, last)| {
@@ -678,6 +684,15 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    fn mouse_action_at(&self, x: u16, y: u16) -> Option<MouseAction> {
+        let targets = self.mouse_targets.borrow();
+        targets
+            .iter()
+            .rev()
+            .find(|target| point_in(target.rect, x, y))
+            .map(|target| target.action)
     }
 
     fn scroll(&mut self, direction: i32) -> Result<()> {
@@ -1458,7 +1473,7 @@ impl App {
             return;
         }
         self.net_loading = true;
-        let include_wifi = self.net_view == NetView::Wifi;
+        let include_wifi = self.tab == Tab::Network && self.net_view == NetView::Wifi;
         let force_scan = self.net_force_scan;
         self.net_force_scan = false;
         let tx = self.net_tx.clone();
@@ -2090,6 +2105,10 @@ impl App {
     pub fn refresh_slow(&mut self) {
         self.request_core();
         self.refresh_current_tab();
+        if self.tab != Tab::Network && self.last_net_header.elapsed() >= Duration::from_secs(15) {
+            self.request_net_snapshot();
+            self.last_net_header = Instant::now();
+        }
     }
 
     fn request_core(&mut self) {

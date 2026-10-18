@@ -16,13 +16,15 @@ const DIM: Color = Color::Rgb(110, 118, 130);
 const GOOD: Color = Color::Rgb(120, 210, 140);
 const WARN: Color = Color::Rgb(240, 190, 90);
 const BAD: Color = Color::Rgb(255, 110, 90);
-const PANEL_BORDER: Color = Color::Rgb(70, 78, 90);
+const PANEL_BORDER: Color = Color::Rgb(62, 70, 82);
+const SURFACE: Color = Color::Rgb(38, 45, 56);
+const SURFACE_HOVER: Color = Color::Rgb(30, 36, 45);
 
 pub fn draw(frame: &mut Frame, app: &App) {
     app.mouse_targets.borrow_mut().clear();
     let area = frame.area();
     let chunks = Layout::vertical([
-        Constraint::Length(3),
+        Constraint::Length(4),
         Constraint::Min(0),
         Constraint::Length(2),
     ])
@@ -56,28 +58,72 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
         .map(|p| p.zh())
         .unwrap_or("未知");
     let profile_color = app.profile.map(|p| profile_color(p.active)).unwrap_or(DIM);
-
+    let model = app
+        .deps
+        .product
+        .replace("ASUS ", "")
+        .split('_')
+        .next()
+        .unwrap_or("ASUS")
+        .to_string();
     let battery = app
         .battery
         .capacity
         .map(|v| format!("{v}%"))
-        .unwrap_or_else(|| "?%".into());
+        .unwrap_or_else(|| "?".into());
     let limit = app
         .battery
         .limit
         .map(|v| format!("上限 {v}%"))
         .unwrap_or_else(|| "上限未知".into());
+    let gpu = app.gpu_mode.map(|m| m.zh()).unwrap_or("未知");
+    let net = app
+        .ssid
+        .clone()
+        .or_else(|| {
+            app.devices
+                .iter()
+                .find(|d| d.state.contains("connected") && d.kind != "loopback")
+                .map(|d| d.connection.clone())
+                .filter(|v| !v.is_empty())
+        })
+        .unwrap_or_else(|| "未连接".into());
+    let temp = app
+        .snap
+        .max_temp
+        .map(|v| format!("{v:.0}°C"))
+        .unwrap_or_else(|| "-".into());
 
-    let line = Line::from(vec![
-        Span::styled(" RszTui ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
-        Span::raw("  ASUS TUF 终端控制台"),
-        Span::raw("    "),
-        Span::styled(
-            format!(" ● {profile} "),
-            Style::new().fg(Color::Black).bg(profile_color).bold(),
-        ),
-        Span::raw(format!("  {battery}  {limit}")),
-    ]);
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(" RszTui ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
+            Span::raw("  "),
+            Span::styled(model, Style::new().fg(Color::Gray).bold()),
+            Span::styled(
+                format!("   up {}", format_uptime(app.snap.uptime)),
+                Style::new().fg(DIM),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  ● ", Style::new().fg(profile_color)),
+            Span::styled(
+                format!("{profile} "),
+                Style::new().fg(Color::Black).bg(profile_color).bold(),
+            ),
+            Span::styled("  GPU ", Style::new().fg(DIM)),
+            Span::styled(gpu, Style::new().fg(Color::Gray)),
+            Span::styled("   电池 ", Style::new().fg(DIM)),
+            Span::styled(battery, Style::new().fg(battery_color(app))),
+            Span::styled(format!("  {limit}"), Style::new().fg(DIM)),
+            Span::styled("   温度 ", Style::new().fg(DIM)),
+            Span::styled(
+                temp,
+                Style::new().fg(temp_color(app.snap.max_temp.unwrap_or(0.0))),
+            ),
+            Span::styled("   网络 ", Style::new().fg(DIM)),
+            Span::styled(net, Style::new().fg(Color::Gray)),
+        ]),
+    ];
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -93,17 +139,34 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
                 Style::new().fg(DIM),
             ),
         ]));
-    frame.render_widget(Paragraph::new(line).block(block), area);
+    frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
 }
 
 fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = Vec::new();
+    let mut line_idx: u16 = 0;
+
     for (index, tab) in Tab::ALL.iter().enumerate() {
+        if index == 0 {
+            lines.push(Line::from(Span::styled(
+                " 控制",
+                Style::new().fg(DIM).bold(),
+            )));
+            line_idx += 1;
+        } else if index == 5 {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                " 系统",
+                Style::new().fg(DIM).bold(),
+            )));
+            line_idx += 2;
+        }
+
         record_mouse(
             app,
             Rect::new(
                 area.x + 1,
-                area.y + 1 + index as u16,
+                area.y + 1 + line_idx,
                 area.width.saturating_sub(2),
                 1,
             ),
@@ -120,41 +183,47 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
             format!(" {marker} {}  {}", index + 1, tab.zh()),
             style,
         )));
+        line_idx += 1;
     }
 
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        " 快速状态",
+        " 状态",
         Style::new().fg(DIM).bold(),
     )));
     lines.push(Line::from(vec![
-        Span::styled("  模式  ", Style::new().fg(DIM)),
+        Span::styled(
+            "  ● ",
+            Style::new().fg(app.profile.map(|p| profile_color(p.active)).unwrap_or(DIM)),
+        ),
         Span::styled(
             app.profile.map(|p| p.active.zh()).unwrap_or("未知"),
-            Style::new()
-                .fg(app.profile.map(|p| profile_color(p.active)).unwrap_or(DIM))
-                .bold(),
+            Style::new().fg(Color::Gray),
         ),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("  电池  ", Style::new().fg(DIM)),
+        Span::styled("  ▰ ", Style::new().fg(battery_color(app))),
         Span::styled(
             app.battery
                 .capacity
                 .map(|v| format!("{v}%"))
                 .unwrap_or_else(|| "?".into()),
-            Style::new().fg(battery_color(app)),
-        ),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  GPU   ", Style::new().fg(DIM)),
-        Span::styled(
-            app.gpu_mode.map(|m| m.zh()).unwrap_or("未知"),
             Style::new().fg(Color::Gray),
         ),
+        Span::styled(
+            app.battery
+                .limit
+                .map(|v| format!("  上限 {v}%"))
+                .unwrap_or_default(),
+            Style::new().fg(DIM),
+        ),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("  网络  ", Style::new().fg(DIM)),
+        Span::styled("  ▣ ", Style::new().fg(ACCENT)),
+        Span::styled(gpu_short(app), Style::new().fg(Color::Gray)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  ⌁ ", Style::new().fg(DIM)),
         Span::styled(
             app.ssid
                 .clone()
@@ -175,6 +244,26 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(" 导航 ", Style::new().fg(ACCENT).bold()))
         .border_style(Style::new().fg(PANEL_BORDER));
     frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+}
+
+fn gpu_short(app: &App) -> &'static str {
+    match app.gpu_mode {
+        Some(GpuMode::Integrated) => "集显",
+        Some(GpuMode::Hybrid) => "混合",
+        Some(GpuMode::Ultimate) => "独显",
+        None => "未知",
+    }
+}
+
+fn format_uptime(seconds: u64) -> String {
+    let days = seconds / 86400;
+    let hours = (seconds % 86400) / 3600;
+    let mins = (seconds % 3600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else {
+        format!("{hours}h {mins}m")
+    }
 }
 
 fn draw_body(frame: &mut Frame, area: Rect, app: &App) {
@@ -519,8 +608,11 @@ fn draw_asus_panel(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_performance(frame: &mut Frame, area: Rect, app: &App) {
+    let rows = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(area);
+    draw_perf_summary(frame, rows[0], app);
+
     let cols =
-        Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)]).split(area);
+        Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)]).split(rows[1]);
 
     let left = Layout::vertical([Constraint::Min(0), Constraint::Length(9)]).split(cols[0]);
     draw_profiles(frame, left[0], app);
@@ -529,6 +621,47 @@ fn draw_performance(frame: &mut Frame, area: Rect, app: &App) {
     let right = Layout::vertical([Constraint::Length(12), Constraint::Min(0)]).split(cols[1]);
     draw_presets(frame, right[0], app);
     draw_power_fields(frame, right[1], app);
+}
+
+fn draw_perf_summary(frame: &mut Frame, area: Rect, app: &App) {
+    let block = panel(" 概览 ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let (active, ac, bat) = app.profile.map(|p| (p.active, p.ac, p.battery)).unwrap_or((
+        Profile::Balanced,
+        Profile::Balanced,
+        Profile::Balanced,
+    ));
+    let gpu = app.gpu_mode.map(|m| m.zh()).unwrap_or("未知");
+    let tuning = if app.tuning {
+        "持久化开启"
+    } else {
+        "持久化关闭"
+    };
+
+    let line = Line::from(vec![
+        Span::styled("  当前 ", Style::new().fg(DIM)),
+        Span::styled(
+            format!(" {} ", active.zh()),
+            Style::new()
+                .fg(Color::Black)
+                .bg(profile_color(active))
+                .bold(),
+        ),
+        Span::styled("   AC 默认 ", Style::new().fg(DIM)),
+        Span::styled(ac.zh(), Style::new().fg(profile_color(ac)).bold()),
+        Span::styled("   电池 ", Style::new().fg(DIM)),
+        Span::styled(bat.zh(), Style::new().fg(profile_color(bat)).bold()),
+        Span::styled("   GPU ", Style::new().fg(DIM)),
+        Span::styled(gpu, Style::new().fg(Color::Gray)),
+        Span::styled("   ", Style::new()),
+        Span::styled(
+            tuning,
+            Style::new().fg(if app.tuning { GOOD } else { WARN }),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line), inner);
 }
 
 fn draw_profiles(frame: &mut Frame, area: Rect, app: &App) {
@@ -546,6 +679,7 @@ fn draw_profiles(frame: &mut Frame, area: Rect, app: &App) {
             MouseAction::Profile(index),
         );
         let selected = index == app.profile_sel;
+        let hovered = app.hover == Some(MouseAction::Profile(index));
         let active = state.map(|s| s.active == *profile).unwrap_or(false);
         let ac = state.map(|s| s.ac == *profile).unwrap_or(false);
         let battery = state.map(|s| s.battery == *profile).unwrap_or(false);
@@ -567,11 +701,7 @@ fn draw_profiles(frame: &mut Frame, area: Rect, app: &App) {
             format!("  [{}]", badges.join(" "))
         };
 
-        let style = if selected {
-            Style::new().bg(Color::Rgb(45, 52, 62)).bold()
-        } else {
-            Style::new()
-        };
+        let style = row_style(selected, hovered);
         lines.push(Line::from(vec![
             Span::styled(format!(" {marker} "), style.fg(profile_color(*profile))),
             Span::styled(profile.zh().to_string(), style.fg(profile_color(*profile))),
@@ -621,6 +751,7 @@ fn draw_gpu_picker(frame: &mut Frame, area: Rect, app: &App) {
             MouseAction::Gpu(index),
         );
         let selected = index == app.gpu_sel;
+        let hovered = app.hover == Some(MouseAction::Gpu(index));
         let current = app.gpu_mode == Some(*mode);
         let marker = if selected { "▶" } else { " " };
         let badge = if current { "  [当前]" } else { "" };
@@ -628,7 +759,9 @@ fn draw_gpu_picker(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(
                 format!(" {marker} {}", mode.zh()),
                 if selected {
-                    Style::new().fg(ACCENT).bold()
+                    Style::new().bg(SURFACE).fg(ACCENT).bold()
+                } else if hovered {
+                    Style::new().bg(SURFACE_HOVER).fg(Color::Gray)
                 } else {
                     Style::new().fg(Color::Gray)
                 },
@@ -657,9 +790,12 @@ fn draw_presets(frame: &mut Frame, area: Rect, app: &App) {
             MouseAction::PerfPreset(index),
         );
         let selected = index == app.preset_sel;
+        let hovered = app.hover == Some(MouseAction::PerfPreset(index));
         let marker = if selected { "▶" } else { " " };
         let style = if selected {
-            Style::new().fg(ACCENT).bold()
+            Style::new().bg(SURFACE).fg(ACCENT).bold()
+        } else if hovered {
+            Style::new().bg(SURFACE_HOVER).fg(Color::Gray)
         } else {
             Style::new().fg(Color::Gray)
         };
@@ -1117,14 +1253,9 @@ fn draw_fan_editor(frame: &mut Frame, area: Rect, app: &App, edit: &crate::app::
             MouseAction::FanPoint(index),
         );
         let selected = index == edit.sel;
-        let style = if selected {
-            Style::new()
-                .bg(Color::Rgb(45, 52, 62))
-                .fg(Color::White)
-                .bold()
-        } else {
-            Style::new().fg(Color::Gray)
-        };
+        let hovered = app.hover == Some(MouseAction::FanPoint(index));
+        let style =
+            row_style(selected, hovered).fg(if selected { Color::White } else { Color::Gray });
         let marker = if selected { "▶" } else { " " };
         lines.push(Line::from(vec![
             Span::styled(format!(" {marker} 点{}  ", index + 1), style),
@@ -1180,12 +1311,15 @@ fn draw_fan_presets(frame: &mut Frame, area: Rect, app: &App) {
                 MouseAction::FanPreset(index),
             );
             let selected = index == app.fan_sel;
+            let hovered = app.hover == Some(MouseAction::FanPreset(index));
             let marker = if selected { "▶" } else { " " };
             lines.push(Line::from(vec![
                 Span::styled(
                     format!(" {marker} {}", preset.name),
                     if selected {
-                        Style::new().fg(ACCENT).bold()
+                        Style::new().bg(SURFACE).fg(ACCENT).bold()
+                    } else if hovered {
+                        Style::new().bg(SURFACE_HOVER).fg(Color::Gray)
                     } else {
                         Style::new().fg(Color::Gray)
                     },
@@ -1329,9 +1463,16 @@ fn draw_lighting_colors(frame: &mut Frame, area: Rect, app: &App) {
             MouseAction::Color(index),
         );
         let selected = index == app.aura_color;
+        let hovered = app.hover == Some(MouseAction::Color(index));
         row.push(Span::styled(
             format!(" {} ", if selected { "▶" } else { " " }),
-            Style::new().fg(if selected { ACCENT } else { DIM }),
+            if selected {
+                Style::new().bg(SURFACE).fg(ACCENT)
+            } else if hovered {
+                Style::new().bg(SURFACE_HOVER).fg(DIM)
+            } else {
+                Style::new().fg(DIM)
+            },
         ));
         row.push(Span::styled("██ ", Style::new().fg(hex_color(hex))));
         row.push(Span::styled(
@@ -1518,6 +1659,7 @@ fn draw_net_list(frame: &mut Frame, area: Rect, app: &App) {
                     MouseAction::Net(index),
                 );
                 let selected = index == app.net_sel;
+                let hovered = app.hover == Some(MouseAction::Net(index));
                 let marker = if selected { "▶" } else { " " };
                 let active = if conn.active {
                     Span::styled(" [已连接]", Style::new().fg(GOOD))
@@ -1528,7 +1670,9 @@ fn draw_net_list(frame: &mut Frame, area: Rect, app: &App) {
                     Span::styled(
                         format!(" {marker} {}", util::truncate(&conn.name, 20)),
                         if selected {
-                            Style::new().fg(ACCENT).bold()
+                            Style::new().bg(SURFACE).fg(ACCENT).bold()
+                        } else if hovered {
+                            Style::new().bg(SURFACE_HOVER).fg(Color::Gray)
                         } else {
                             Style::new().fg(Color::Gray)
                         },
@@ -1549,6 +1693,7 @@ fn draw_net_list(frame: &mut Frame, area: Rect, app: &App) {
                     MouseAction::Net(index),
                 );
                 let selected = index == app.net_sel;
+                let hovered = app.hover == Some(MouseAction::Net(index));
                 let marker = if selected { "▶" } else { " " };
                 let bars = signal_bar(ap.signal);
                 let in_use = if ap.in_use {
@@ -1560,7 +1705,9 @@ fn draw_net_list(frame: &mut Frame, area: Rect, app: &App) {
                     Span::styled(
                         format!(" {marker} {}", util::truncate(&ap.ssid, 24)),
                         if selected {
-                            Style::new().fg(ACCENT).bold()
+                            Style::new().bg(SURFACE).fg(ACCENT).bold()
+                        } else if hovered {
+                            Style::new().bg(SURFACE_HOVER).fg(Color::Gray)
                         } else {
                             Style::new().fg(Color::Gray)
                         },
@@ -1585,6 +1732,7 @@ fn draw_net_list(frame: &mut Frame, area: Rect, app: &App) {
                     MouseAction::Net(index),
                 );
                 let selected = index == app.net_sel;
+                let hovered = app.hover == Some(MouseAction::Net(index));
                 let marker = if selected { "▶" } else { " " };
                 let active = if vpn.active {
                     Span::styled(" [已连接]", Style::new().fg(GOOD))
@@ -1595,7 +1743,9 @@ fn draw_net_list(frame: &mut Frame, area: Rect, app: &App) {
                     Span::styled(
                         format!(" {marker} {}", util::truncate(&vpn.name, 26)),
                         if selected {
-                            Style::new().fg(ACCENT).bold()
+                            Style::new().bg(SURFACE).fg(ACCENT).bold()
+                        } else if hovered {
+                            Style::new().bg(SURFACE_HOVER).fg(Color::Gray)
                         } else {
                             Style::new().fg(Color::Gray)
                         },
@@ -1628,6 +1778,7 @@ fn draw_net_details(frame: &mut Frame, area: Rect, app: &App) {
     match app.net_view {
         NetView::Connections => {
             if let Some(conn) = app.connections.get(app.net_sel) {
+                lines.push(section("链路"));
                 lines.push(detail("名称", conn.name.clone()));
                 lines.push(detail("类型", short_kind(&conn.kind).to_string()));
                 lines.push(detail(
@@ -1662,6 +1813,7 @@ fn draw_net_details(frame: &mut Frame, area: Rect, app: &App) {
                     }
                 }
                 lines.push(Line::raw(""));
+                lines.push(section("IPv4"));
                 if let Some(ip) = &app.net_ipv4 {
                     lines.push(detail(
                         "IPv4",
@@ -1698,6 +1850,7 @@ fn draw_net_details(frame: &mut Frame, area: Rect, app: &App) {
                     }
                 }
                 lines.push(Line::raw(""));
+                lines.push(section("操作"));
                 lines.push(Line::from(Span::styled(
                     " Enter 编辑 IPv4 / DNS",
                     Style::new().fg(DIM),
@@ -1714,6 +1867,7 @@ fn draw_net_details(frame: &mut Frame, area: Rect, app: &App) {
         }
         NetView::Wifi => {
             if let Some(ap) = app.wifi.get(app.net_sel) {
+                lines.push(section("Wi-Fi"));
                 lines.push(detail("SSID", ap.ssid.clone()));
                 lines.push(detail("BSSID", ap.bssid.clone()));
                 lines.push(detail("信号", format!("{}%", ap.signal)));
@@ -1732,6 +1886,7 @@ fn draw_net_details(frame: &mut Frame, area: Rect, app: &App) {
                     if ap.in_use { "已连接" } else { "未连接" }.into(),
                 ));
                 lines.push(Line::raw(""));
+                lines.push(section("操作"));
                 lines.push(Line::from(Span::styled(
                     " Enter 连接（密码写入 NM keyfile）",
                     Style::new().fg(DIM),
@@ -1744,12 +1899,14 @@ fn draw_net_details(frame: &mut Frame, area: Rect, app: &App) {
         }
         NetView::Vpn => {
             if let Some(vpn) = app.vpns.get(app.net_sel) {
+                lines.push(section("VPN"));
                 lines.push(detail("名称", vpn.name.clone()));
                 lines.push(detail(
                     "状态",
                     if vpn.active { "已连接" } else { "未连接" }.into(),
                 ));
                 lines.push(Line::raw(""));
+                lines.push(section("操作"));
                 lines.push(Line::from(Span::styled(
                     " Enter/u 连接   d 断开",
                     Style::new().fg(DIM),
@@ -1903,10 +2060,27 @@ fn action_bar(
     Some(Line::from(spans))
 }
 
+fn row_style(selected: bool, hovered: bool) -> Style {
+    if selected {
+        Style::new().bg(SURFACE).fg(Color::White).bold()
+    } else if hovered {
+        Style::new().bg(SURFACE_HOVER)
+    } else {
+        Style::new()
+    }
+}
+
 fn record_mouse(app: &App, rect: Rect, action: MouseAction) {
     app.mouse_targets
         .borrow_mut()
         .push(MouseTarget { rect, action });
+}
+
+fn section(title: &'static str) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("  {title}"),
+        Style::new().fg(ACCENT).bold(),
+    ))
 }
 
 fn detail(label: &'static str, value: String) -> Line<'static> {
@@ -1970,6 +2144,7 @@ fn draw_services(frame: &mut Frame, area: Rect, app: &App) {
             MouseAction::Service(index),
         );
         let selected = index == app.service_sel;
+        let hovered = app.hover == Some(MouseAction::Service(index));
         let marker = if selected { "▶" } else { " " };
         let active_color = match info.active.as_str() {
             "active" => GOOD,
@@ -1987,7 +2162,9 @@ fn draw_services(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(
                 format!(" {marker} {:<24}", util::truncate(info.display_name(), 24)),
                 if selected {
-                    Style::new().fg(ACCENT).bold()
+                    Style::new().bg(SURFACE).fg(ACCENT).bold()
+                } else if hovered {
+                    Style::new().bg(SURFACE_HOVER).fg(Color::Gray)
                 } else {
                     Style::new().fg(Color::Gray)
                 },
@@ -2344,12 +2521,13 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" ", Style::new()),
+            Span::styled(" ▌ ", Style::new().fg(ACCENT)),
             Span::styled(
-                util::truncate(&app.status, (area.width as usize).saturating_sub(2)),
+                util::truncate(&app.status, (area.width as usize).saturating_sub(3)),
                 status_style,
             ),
-        ])),
+        ]))
+        .style(Style::new().bg(SURFACE)),
         rows[0],
     );
 
