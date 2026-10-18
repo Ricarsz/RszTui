@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
@@ -99,61 +99,80 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
         .or(app.snap.max_temp)
         .map(|v| format!("{v:.1}°C"))
         .unwrap_or_else(|| "-".into());
-
-    let lines = vec![
-        Line::from(vec![
-            Span::styled(" RszTui ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
-            Span::raw("  "),
-            Span::styled(model, Style::new().fg(Color::Gray).bold()),
-            Span::styled(
-                format!("   up {}", format_uptime(app.snap.uptime)),
-                Style::new().fg(DIM),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("  ● ", Style::new().fg(profile_color)),
-            Span::styled(
-                format!("{profile} "),
-                Style::new().fg(Color::Black).bg(profile_color).bold(),
-            ),
-            Span::styled("  GPU ", Style::new().fg(DIM)),
-            Span::styled(gpu, Style::new().fg(Color::Gray)),
-            Span::styled("   电池 ", Style::new().fg(DIM)),
-            Span::styled(battery, Style::new().fg(battery_color(app))),
-            Span::styled(format!("  {limit}"), Style::new().fg(DIM)),
-            Span::styled("   CPU 温度 ", Style::new().fg(DIM)),
-            Span::styled(
-                cpu_temp,
-                Style::new().fg(temp_color(
-                    app.snap
-                        .temps
-                        .iter()
-                        .find(|(label, _)| label.to_ascii_lowercase().contains("tctl"))
-                        .map(|(_, value)| *value)
-                        .or(app.snap.max_temp)
-                        .unwrap_or(0.0),
-                )),
-            ),
-            Span::styled("   网络 ", Style::new().fg(DIM)),
-            Span::styled(net, Style::new().fg(Color::Gray)),
-        ]),
-    ];
+    let (power, power_color) = match app.battery.ac_online {
+        Some(true) => ("AC 供电", GOOD),
+        Some(false) => ("电池供电", WARN),
+        None => ("供电未知", DIM),
+    };
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(PANEL_BORDER))
-        .title(Line::from(vec![
-            Span::styled(" 状态 ", Style::new().fg(ACCENT).bold()),
-            Span::styled(
-                match app.battery.ac_online {
-                    Some(true) => "AC 供电",
-                    Some(false) => "电池供电",
-                    None => "",
-                },
-                Style::new().fg(DIM),
-            ),
-        ]));
-    frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+        .title(Line::from(Span::styled(
+            " 状态 ",
+            Style::new().fg(ACCENT).bold(),
+        )));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let left = Line::from(vec![
+        Span::styled(" RszTui ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
+        Span::raw("  "),
+        Span::styled(model, Style::new().fg(Color::Gray).bold()),
+    ]);
+    let right = Line::from(vec![
+        Span::raw(" "),
+        Span::styled(power, Style::new().fg(power_color)),
+        Span::styled("  ·  ", Style::new().fg(PANEL_BORDER)),
+        Span::styled(
+            format!("up {}", format_uptime(app.snap.uptime)),
+            Style::new().fg(DIM),
+        ),
+    ]);
+    let right_width = right.width().min(inner.width as usize) as u16;
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
+    let top =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(right_width)]).split(rows[0]);
+    frame.render_widget(Paragraph::new(left), top[0]);
+    frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), top[1]);
+
+    let separator = || Span::styled(" │ ", Style::new().fg(PANEL_BORDER));
+    let mut status = vec![
+        Span::styled(" ●", Style::new().fg(profile_color)),
+        Span::styled(
+            format!(" {profile}"),
+            Style::new().fg(Color::Black).bg(profile_color).bold(),
+        ),
+        separator(),
+        Span::styled("GPU ", Style::new().fg(DIM)),
+        Span::styled(gpu, Style::new().fg(Color::Gray)),
+        separator(),
+        Span::styled("电池 ", Style::new().fg(DIM)),
+        Span::styled(battery, Style::new().fg(battery_color(app))),
+    ];
+    if inner.width >= 84 {
+        status.push(Span::styled(format!("  {limit}"), Style::new().fg(DIM)));
+    }
+    status.push(separator());
+    status.push(Span::styled("CPU ", Style::new().fg(DIM)));
+    status.push(Span::styled(
+        cpu_temp,
+        Style::new().fg(temp_color(
+            app.snap
+                .temps
+                .iter()
+                .find(|(label, _)| label.to_ascii_lowercase().contains("tctl"))
+                .map(|(_, value)| *value)
+                .or(app.snap.max_temp)
+                .unwrap_or(0.0),
+        )),
+    ));
+    if inner.width >= 76 {
+        status.push(separator());
+        status.push(Span::styled("网络 ", Style::new().fg(DIM)));
+        status.push(Span::styled(net, Style::new().fg(Color::Gray)));
+    }
+    frame.render_widget(Paragraph::new(Line::from(status)), rows[1]);
 }
 
 fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
