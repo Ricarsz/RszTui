@@ -11,6 +11,11 @@ use clap::Parser;
 use cli::Cli;
 
 fn main() {
+    // 恢复默认 SIGPIPE 行为，避免 `rogtui ... | head` 时 panic。
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     let cli = Cli::parse();
 
     if !util::is_root() {
