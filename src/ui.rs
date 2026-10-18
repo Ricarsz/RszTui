@@ -367,19 +367,24 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
         Constraint::Ratio(1, 3),
         Constraint::Ratio(1, 3),
     ])
+    .spacing(1)
     .split(area);
 
-    let top = Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).split(rows[0]);
+    let top = Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .spacing(1)
+        .split(rows[0]);
     draw_cpu(frame, top[0], app);
     draw_memory(frame, top[1], app);
 
-    let middle =
-        Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).split(rows[1]);
+    let middle = Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .spacing(1)
+        .split(rows[1]);
     draw_network_graph(frame, middle[0], app);
     draw_temps(frame, middle[1], app);
 
-    let bottom =
-        Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).split(rows[2]);
+    let bottom = Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .spacing(1)
+        .split(rows[2]);
     draw_battery_panel(frame, bottom[0], app);
     draw_asus_panel(frame, bottom[1], app);
 }
@@ -910,6 +915,62 @@ fn draw_profiles(frame: &mut Frame, area: Rect, app: &App) {
 
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
+        " 默认模式（点击设置）",
+        Style::new().fg(DIM).bold(),
+    )));
+
+    let ac = state.map(|s| s.ac).unwrap_or(Profile::Balanced);
+    let bat = state.map(|s| s.battery).unwrap_or(Profile::Balanced);
+    let mut ac_spans = vec![Span::styled("   AC   ", Style::new().fg(DIM))];
+    let mut bat_spans = vec![Span::styled("   电池 ", Style::new().fg(DIM))];
+    for profile in Profile::ALL.iter() {
+        let style = if *profile == ac {
+            Style::new()
+                .fg(Color::Black)
+                .bg(profile_color(*profile))
+                .bold()
+        } else {
+            Style::new().fg(profile_color(*profile))
+        };
+        ac_spans.push(Span::styled(format!(" {} ", profile.zh()), style));
+        ac_spans.push(Span::raw(" "));
+        let style = if *profile == bat {
+            Style::new()
+                .fg(Color::Black)
+                .bg(profile_color(*profile))
+                .bold()
+        } else {
+            Style::new().fg(profile_color(*profile))
+        };
+        bat_spans.push(Span::styled(format!(" {} ", profile.zh()), style));
+        bat_spans.push(Span::raw(" "));
+    }
+
+    let ac_y = inner.y + lines.len() as u16;
+    let mut x = inner.x + 6;
+    for index in 0..Profile::ALL.len() {
+        record_mouse(
+            app,
+            Rect::new(x, ac_y, 6, 1),
+            MouseAction::SetAcDefault(index),
+        );
+        x += 7;
+    }
+    lines.push(Line::from(ac_spans));
+    let bat_y = ac_y + 1;
+    let mut x = inner.x + 6;
+    for index in 0..Profile::ALL.len() {
+        record_mouse(
+            app,
+            Rect::new(x, bat_y, 6, 1),
+            MouseAction::SetBatteryDefault(index),
+        );
+        x += 7;
+    }
+    lines.push(Line::from(bat_spans));
+    lines.push(Line::raw(""));
+
+    lines.push(Line::from(Span::styled(
         " Enter 切换   a AC 默认   b 电池默认",
         Style::new().fg(DIM),
     )));
@@ -1103,8 +1164,14 @@ fn draw_power_fields(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_battery(frame: &mut Frame, area: Rect, app: &App) {
-    let rows = Layout::vertical([Constraint::Length(9), Constraint::Length(7)]).split(area);
-    draw_battery_status(frame, rows[0], app);
+    let rows = Layout::vertical([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .spacing(1)
+        .split(area);
+    let top = Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .spacing(1)
+        .split(rows[0]);
+    draw_battery_status(frame, top[0], app);
+    draw_battery_health(frame, top[1], app);
     draw_battery_limit(frame, rows[1], app);
 }
 
@@ -1117,8 +1184,7 @@ fn draw_battery_status(frame: &mut Frame, area: Rect, app: &App) {
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Min(0),
     ])
     .split(inner);
 
@@ -1182,44 +1248,87 @@ fn draw_battery_status(frame: &mut Frame, area: Rect, app: &App) {
     );
     frame.render_widget(Line::from(Span::raw("")), rows[3]);
 
+    let lines = vec![
+        Line::from(Span::styled("  使用建议", Style::new().fg(DIM).bold())),
+        Line::from(Span::styled(
+            "  长期插电建议上限 60–80%",
+            Style::new().fg(Color::Gray),
+        )),
+        Line::from(Span::styled(
+            "  高温会加速电池老化，注意散热",
+            Style::new().fg(Color::Gray),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(Text::from(lines)), rows[4]);
+}
+
+fn draw_battery_health(frame: &mut Frame, area: Rect, app: &App) {
+    let block = panel(" 健康与容量 ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let mut lines = Vec::new();
+
     let health = app.battery.health_pct().unwrap_or(0.0);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("  健康度  ", Style::new().fg(DIM)),
+    lines.push(Line::from(vec![
+        Span::styled("  健康度  ", Style::new().fg(DIM)),
+        Span::styled(
+            bar_text(health as f64 / 100.0, 16),
+            Style::new().fg(if health >= 80.0 { GOOD } else { WARN }),
+        ),
+        Span::styled(format!("  {health:.1}%"), Style::new().fg(Color::Gray)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  容量  ", Style::new().fg(DIM)),
+        Span::styled(
+            if let (Some(full), Some(design)) = (
+                app.battery.energy_full_wh,
+                app.battery.energy_full_design_wh,
+            ) {
+                format!("{full:.1} / {design:.1} Wh")
+            } else {
+                "-".into()
+            },
+            Style::new().fg(Color::Gray),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  循环  ", Style::new().fg(DIM)),
+        Span::styled(
+            app.battery
+                .cycle_count
+                .map(|v| format!("{v} 次"))
+                .unwrap_or_else(|| "-".into()),
+            Style::new().fg(Color::Gray),
+        ),
+    ]));
+    if !app.battery.manufacturer.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  厂商  ", Style::new().fg(DIM)),
             Span::styled(
-                bar_text(health as f64 / 100.0, 20),
-                Style::new().fg(if health >= 80.0 { GOOD } else { WARN }),
-            ),
-            Span::styled(format!("  {health:.1}%"), Style::new().fg(Color::Gray)),
-        ])),
-        rows[4],
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("  容量  ", Style::new().fg(DIM)),
-            Span::styled(
-                if let (Some(full), Some(design)) = (
-                    app.battery.energy_full_wh,
-                    app.battery.energy_full_design_wh,
-                ) {
-                    format!("{full:.1} / {design:.1} Wh")
-                } else {
-                    "-".into()
-                },
+                util::truncate(&app.battery.manufacturer, 30),
                 Style::new().fg(Color::Gray),
             ),
+        ]));
+    }
+    if !app.battery.model.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  型号  ", Style::new().fg(DIM)),
             Span::styled(
-                format!(
-                    "   循环 {} 次",
-                    app.battery
-                        .cycle_count
-                        .map(|v| v.to_string())
-                        .unwrap_or_else(|| "-".into())
-                ),
-                Style::new().fg(DIM),
+                util::truncate(&app.battery.model, 30),
+                Style::new().fg(Color::Gray),
             ),
-        ])),
-        rows[5],
+        ]));
+    }
+    if !app.battery.technology.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  技术  ", Style::new().fg(DIM)),
+            Span::styled(app.battery.technology.clone(), Style::new().fg(DIM)),
+        ]));
+    }
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        inner,
     );
 }
 
@@ -1657,7 +1766,11 @@ fn draw_lighting(frame: &mut Frame, area: Rect, app: &App) {
 
     draw_lighting_status(frame, cols[0], app);
     draw_lighting_colors(frame, cols[1], app);
-    draw_lighting_modes(frame, rows[1], app);
+    let bottom = Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)])
+        .spacing(1)
+        .split(rows[1]);
+    draw_lighting_modes(frame, bottom[0], app);
+    draw_lighting_notes(frame, bottom[1], app);
 }
 
 fn draw_lighting_status(frame: &mut Frame, area: Rect, app: &App) {
@@ -1887,9 +2000,6 @@ fn draw_lighting_modes(frame: &mut Frame, area: Rect, app: &App) {
                     Style::new().fg(DIM)
                 },
             ));
-            if active {
-                spans.push(Span::styled("[当前] ", Style::new().fg(GOOD)));
-            }
         }
         lines.push(Line::from(spans));
     }
@@ -1903,6 +2013,66 @@ fn draw_lighting_modes(frame: &mut Frame, area: Rect, app: &App) {
         "  灯效由键盘固件决定，部分模式不支持颜色/速度调节",
         Style::new().fg(DIM),
     )));
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn draw_lighting_notes(frame: &mut Frame, area: Rect, app: &App) {
+    let block = panel(" 灯效说明 ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines = vec![
+        Line::from(Span::styled("  当前模式", Style::new().fg(DIM).bold())),
+        Line::from(vec![
+            Span::styled("   ", Style::new()),
+            Span::styled(
+                app.aura
+                    .as_ref()
+                    .map(|a| format!("{}（{}）", a.mode_name, a.mode_zh))
+                    .unwrap_or_else(|| "不可用".into()),
+                Style::new().fg(ACCENT),
+            ),
+        ]),
+        Line::raw(""),
+        Line::from(Span::styled("  快捷键", Style::new().fg(DIM).bold())),
+        Line::from(Span::styled(
+            "  e / E   下一个 / 上一个",
+            Style::new().fg(Color::Gray),
+        )),
+        Line::from(Span::styled(
+            "  c       切换静态颜色",
+            Style::new().fg(Color::Gray),
+        )),
+        Line::from(Span::styled(
+            "  S       应用静态色",
+            Style::new().fg(Color::Gray),
+        )),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "  静态色只在 Static 下生效",
+            Style::new().fg(DIM),
+        )),
+        Line::from(Span::styled(
+            "  部分灯效由固件控制，颜色/速度",
+            Style::new().fg(DIM),
+        )),
+        Line::from(Span::styled("  可能被忽略", Style::new().fg(DIM))),
+    ];
+    if let Some(aura) = &app.aura {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::styled("  当前颜色  ", Style::new().fg(DIM)),
+            Span::styled(format!("{} ", aura.color1), Style::new().fg(Color::Gray)),
+            Span::styled(
+                "████",
+                Style::new().fg(hex_color(aura.color1.trim_start_matches('#'))),
+            ),
+        ]));
+    }
 
     frame.render_widget(
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
@@ -1948,8 +2118,9 @@ fn draw_network(frame: &mut Frame, area: Rect, app: &App) {
     ]);
     frame.render_widget(Paragraph::new(header), rows[0]);
 
-    let cols =
-        Layout::horizontal([Constraint::Percentage(56), Constraint::Percentage(44)]).split(rows[1]);
+    let cols = Layout::horizontal([Constraint::Percentage(56), Constraint::Percentage(44)])
+        .spacing(1)
+        .split(rows[1]);
     draw_net_list(frame, cols[0], app);
     draw_net_details(frame, cols[1], app);
 }

@@ -113,6 +113,9 @@ pub struct BatteryInfo {
     pub energy_full_design_wh: Option<f32>,
     pub cycle_count: Option<u32>,
     pub ac_online: Option<bool>,
+    pub manufacturer: String,
+    pub model: String,
+    pub technology: String,
 }
 
 impl BatteryInfo {
@@ -157,6 +160,9 @@ pub fn battery_info() -> Result<BatteryInfo> {
         info.capacity = read_sys(&bat.join("capacity")).and_then(|v| v.parse().ok());
         info.status = read_sys(&bat.join("status")).unwrap_or_else(|| "未知".into());
         info.cycle_count = read_sys(&bat.join("cycle_count")).and_then(|v| v.parse().ok());
+        info.manufacturer = read_sys(&bat.join("manufacturer")).unwrap_or_default();
+        info.model = read_sys(&bat.join("model_name")).unwrap_or_default();
+        info.technology = read_sys(&bat.join("technology")).unwrap_or_default();
 
         let voltage_uv = read_sys(&bat.join("voltage_now")).and_then(|v| v.parse::<f64>().ok());
         info.voltage_v = voltage_uv.map(|v| (v / 1_000_000.0) as f32);

@@ -252,6 +252,8 @@ pub enum MouseAction {
     PerfPowerApply,
     PerfPresetApply,
     PerfPanel(PerfFocus),
+    SetAcDefault(usize),
+    SetBatteryDefault(usize),
     ModalConfirm,
     ModalCancel,
 }
@@ -860,6 +862,22 @@ impl App {
             }
             MouseAction::PerfPanel(focus) => {
                 self.perf_focus = focus;
+            }
+            MouseAction::SetAcDefault(index) => {
+                let profile = Profile::ALL[index.min(Profile::ALL.len() - 1)];
+                self.confirm(
+                    "设置 AC 默认模式",
+                    format!("AC 供电时默认使用{}模式？", profile.zh()),
+                    Pending::DefaultAc(profile),
+                );
+            }
+            MouseAction::SetBatteryDefault(index) => {
+                let profile = Profile::ALL[index.min(Profile::ALL.len() - 1)];
+                self.confirm(
+                    "设置电池默认模式",
+                    format!("电池供电时默认使用{}模式？", profile.zh()),
+                    Pending::DefaultBattery(profile),
+                );
             }
             MouseAction::ModalConfirm | MouseAction::ModalCancel => {}
         }
