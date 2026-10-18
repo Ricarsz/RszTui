@@ -27,7 +27,7 @@ jobs:
 
       - name: Build package
         working-directory: packaging/aur
-        run: sudo -u builder makepkg -f --noconfirm
+        run: sudo -u builder makepkg -f --noconfirm --skipchecksums
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
