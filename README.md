@@ -24,7 +24,35 @@ ASUS TUF 的终端控制台。Rust + [ratatui](https://ratatui.rs/)，底层调�
 
 启动时如果不是 root 会直接提示退出。
 
-## 构建与安装
+## 安装
+
+### AUR（推荐）
+
+已发布后：
+
+```bash
+paru -S rsztui
+```
+
+AUR 包名是 `rsztui`，安装后的命令也是 `rsztui`。
+
+### 从本地 PKGBUILD 安装
+
+还没发布到 AUR 时，可以直接用 paru 构建当前目录：
+
+```bash
+cd RszTui/packaging/aur
+paru -Bi
+```
+
+或者：
+
+```bash
+cd RszTui/packaging/aur
+makepkg -si
+```
+
+### 手动构建
 
 ```bash
 cd RszTui
@@ -32,14 +60,9 @@ make                 # cargo build --release
 sudo make install    # 安装到 /usr/local/bin/rsztui
 ```
 
-或者：
+卸载：`sudo make uninstall`（AUR 安装则 `sudo pacman -R rsztui`）。
 
-```bash
-cargo build --release
-sudo install -Dm755 target/release/rsztui /usr/local/bin/rsztui
-```
-
-卸载：`sudo make uninstall`。
+AUR 发布/更新步骤见 [`packaging/aur/README.md`](packaging/aur/README.md)。
 
 ## 使用
 

@@ -1,0 +1,40 @@
+# Maintainer: Ricarsz <Ricarsz@users.noreply.github.com>
+pkgname=rsztui
+pkgver=0.3.0
+pkgrel=1
+pkgdesc="Terminal control panel for ASUS TUF laptops using asusctl and NetworkManager"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Ricarsz/RszTui"
+license=('MIT')
+depends=('glibc' 'gcc-libs')
+makedepends=('cargo')
+optdepends=(
+  'asusctl: ASUS performance, battery, fan and lighting control'
+  'networkmanager: Wi-Fi, IPv4/DNS, VPN and hotspot management'
+)
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('47af794fff256ae8ce100255fa543aae75eecee5744b6504baeb434acc5cfb14')
+
+prepare() {
+  cd "RszTui-$pkgver"
+  cargo fetch --locked --target "$CARCH-unknown-linux-gnu"
+}
+
+build() {
+  cd "RszTui-$pkgver"
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd "RszTui-$pkgver"
+  export CARGO_TARGET_DIR=target
+  cargo test --frozen --release
+}
+
+package() {
+  cd "RszTui-$pkgver"
+  install -Dm755 target/release/rsztui "$pkgdir/usr/bin/rsztui"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
