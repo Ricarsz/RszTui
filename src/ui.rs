@@ -323,9 +323,8 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
         let selected = *tab == app.tab;
         let marker = if selected { "▌" } else { " " };
         let key = index + 1;
-        let icon = tab_icon(*tab);
         let label = tab.zh();
-        let used = UnicodeWidthStr::width(format!(" {marker} {key} {icon} {label}").as_str());
+        let used = UnicodeWidthStr::width(format!(" {marker} {key} {label}").as_str());
         let pad = " ".repeat(inner_width.saturating_sub(used));
 
         let hovered = app.hover == Some(MouseAction::Tab(*tab));
@@ -340,7 +339,6 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
             lines.push(Line::from(vec![
                 Span::styled(format!(" {marker} "), base.fg(pal().accent).bold()),
                 Span::styled(format!("{key} "), base.fg(pal().accent)),
-                Span::styled(format!("{icon} "), base.fg(pal().accent)),
                 Span::styled(label, base.fg(pal().text).bold()),
                 Span::styled(pad, base),
             ]));
@@ -348,7 +346,6 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
             lines.push(Line::from(vec![
                 Span::styled(format!(" {marker} "), base.fg(pal().faint)),
                 Span::styled(format!("{key} "), base.fg(pal().dim)),
-                Span::styled(format!("{icon} "), base.fg(pal().faint)),
                 Span::styled(label, base.fg(pal().text)),
                 Span::styled(pad, base),
             ]));
@@ -374,28 +371,28 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
         ),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("  ▰ ", Style::new().fg(battery_color(app))),
+        Span::styled("  电池 ", Style::new().fg(pal().dim)),
         Span::styled(
             app.battery
                 .capacity
                 .map(|v| format!("{v}%"))
                 .unwrap_or_else(|| "?".into()),
-            Style::new().fg(pal().text).bold(),
+            Style::new().fg(battery_color(app)).bold(),
         ),
         Span::styled(
             app.battery
                 .limit
-                .map(|v| format!("  上限 {v}%"))
+                .map(|v| format!(" 限 {v}%"))
                 .unwrap_or_default(),
             Style::new().fg(pal().dim),
         ),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("  ▣ ", Style::new().fg(pal().accent)),
+        Span::styled("  GPU  ", Style::new().fg(pal().dim)),
         Span::styled(gpu_short(app), Style::new().fg(pal().text)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("  ⌁ ", Style::new().fg(pal().faint)),
+        Span::styled("  网络 ", Style::new().fg(pal().dim)),
         Span::styled(
             app.ssid
                 .clone()
@@ -428,19 +425,6 @@ fn sidebar_heading(label: &str, width: usize) -> Line<'static> {
             Style::new().fg(pal().faint),
         ),
     ])
-}
-
-fn tab_icon(tab: Tab) -> &'static str {
-    match tab {
-        Tab::Dashboard => "◉",
-        Tab::Performance => "▲",
-        Tab::Battery => "▰",
-        Tab::Fan => "✳",
-        Tab::Lighting => "✦",
-        Tab::Network => "⌁",
-        Tab::Services => "▣",
-        Tab::Settings => "◇",
-    }
 }
 
 fn gpu_short(app: &App) -> &'static str {
@@ -802,6 +786,8 @@ fn draw_temps(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    let bar_width = 8usize;
+    let label_width = inner.width.saturating_sub(18).max(8) as usize;
     let lines: Vec<Line> = app
         .snap
         .temps
@@ -809,11 +795,13 @@ fn draw_temps(frame: &mut Frame, area: Rect, app: &App) {
         .take(inner.height as usize)
         .map(|(label, value)| {
             let ratio = ((*value - 30.0) / 70.0).clamp(0.0, 1.0);
-            let filled = (ratio * 8.0).round() as usize;
-            let bar = format!("{}{}", "█".repeat(filled), "░".repeat(8 - filled));
+            let filled = (ratio * bar_width as f32).round() as usize;
+            let bar = format!("{}{}", "█".repeat(filled), "░".repeat(bar_width - filled));
+            let label = util::truncate(label, label_width);
+            let pad = label_width.saturating_sub(UnicodeWidthStr::width(label.as_str()));
             Line::from(vec![
                 Span::styled(
-                    format!("  {:<26}", util::truncate(label, 26)),
+                    format!("  {label}{}", " ".repeat(pad)),
                     Style::new().fg(pal().text),
                 ),
                 Span::styled(bar, Style::new().fg(temp_color(*value))),
@@ -1671,11 +1659,13 @@ fn draw_fan(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_fan_graph(frame: &mut Frame, area: Rect, app: &App) {
-    use ratatui::widgets::canvas::{Canvas, Line as CanvasLine, Points};
+    use ratatui::widgets::canvas::{Canvas, Circle, Line as CanvasLine};
 
     let cpu_color = pal().accent;
     let gpu_color = pal().chart;
-    let grid = Color::Rgb(55, 62, 72);
+    let graph_bg = mix_color(pal().surface, Color::Rgb(4, 6, 9), 0.48);
+    let grid = mix_color(pal().border, graph_bg, 0.35);
+    let axis = pal().dim;
 
     type FanPlot = (String, Vec<(u8, u8)>, Color, bool);
     let curves: Vec<FanPlot> = ["cpu", "gpu"]
@@ -1713,14 +1703,58 @@ fn draw_fan_graph(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(" 风扇曲线 ", Style::new().fg(pal().accent).bold()),
         Span::styled("CPU ", Style::new().fg(cpu_color)),
         Span::styled("GPU ", Style::new().fg(gpu_color)),
-        Span::styled(" 横轴温度 / 纵轴 PWM", Style::new().fg(pal().dim)),
+        Span::styled(" 温度 → / PWM ↑", Style::new().fg(pal().dim)),
     ]);
 
     let canvas = Canvas::default()
         .block(panel(title))
+        .background_color(graph_bg)
         .x_bounds([20.0, 100.0])
         .y_bounds([0.0, 255.0])
         .paint(|ctx| {
+            // 先铺曲线下方的暗色面积，网格和曲线再覆盖上去。
+            for (_name, points, color, _editing) in &curves {
+                let coords: Vec<(f64, f64)> = points
+                    .iter()
+                    .map(|(temp, pwm)| (*temp as f64, *pwm as f64))
+                    .collect();
+                let Some(first) = coords.first() else {
+                    continue;
+                };
+                let Some(last) = coords.last() else {
+                    continue;
+                };
+                let fill = mix_color(*color, graph_bg, 0.80);
+                let start = first.0.max(20.0);
+                let end = last.0.min(100.0);
+                if end <= start {
+                    continue;
+                }
+                let steps = ((end - start) * 4.0).ceil() as usize;
+                for i in 0..=steps {
+                    let x = start + (end - start) * i as f64 / steps as f64;
+                    let mut previous = coords[0];
+                    let mut y = previous.1;
+                    for pair in coords.windows(2) {
+                        if x <= pair[1].0 {
+                            let span = (pair[1].0 - pair[0].0).max(0.001);
+                            let t = ((x - pair[0].0) / span).clamp(0.0, 1.0);
+                            y = pair[0].1 + (pair[1].1 - pair[0].1) * t;
+                            break;
+                        }
+                        previous = pair[1];
+                        y = previous.1;
+                    }
+                    ctx.draw(&CanvasLine {
+                        x1: x,
+                        y1: 0.0,
+                        x2: x,
+                        y2: y,
+                        color: fill,
+                    });
+                }
+            }
+
             for y in [0.0, 64.0, 128.0, 192.0, 255.0] {
                 ctx.draw(&CanvasLine {
                     x1: 20.0,
@@ -1739,9 +1773,14 @@ fn draw_fan_graph(frame: &mut Frame, area: Rect, app: &App) {
                     color: grid,
                 });
             }
-            ctx.print(21.5, 238.0, "255");
-            ctx.print(21.5, 4.0, "0");
-            ctx.print(95.0, 4.0, "°C");
+
+            let label = |text: &'static str| Line::from(Span::styled(text, Style::new().fg(axis)));
+            ctx.print(20.8, 245.0, label("255"));
+            ctx.print(20.8, 124.0, label("128"));
+            ctx.print(20.8, 7.0, label("0"));
+            ctx.print(21.0, 2.0, label("20"));
+            ctx.print(91.0, 2.0, label("100"));
+            ctx.print(96.0, 245.0, label("°C"));
 
             for (_name, points, color, editing) in &curves {
                 let coords: Vec<(f64, f64)> = points
@@ -1749,24 +1788,29 @@ fn draw_fan_graph(frame: &mut Frame, area: Rect, app: &App) {
                     .map(|(temp, pwm)| (*temp as f64, *pwm as f64))
                     .collect();
                 for pair in coords.windows(2) {
-                    ctx.draw(&CanvasLine {
-                        x1: pair[0].0,
-                        y1: pair[0].1,
-                        x2: pair[1].0,
-                        y2: pair[1].1,
-                        color: *color,
-                    });
+                    for offset in [-0.7, 0.0, 0.7] {
+                        ctx.draw(&CanvasLine {
+                            x1: pair[0].0,
+                            y1: (pair[0].1 + offset).clamp(0.0, 255.0),
+                            x2: pair[1].0,
+                            y2: (pair[1].1 + offset).clamp(0.0, 255.0),
+                            color: *color,
+                        });
+                    }
                 }
-                ctx.draw(&Points {
-                    coords: &coords,
-                    color: if *editing { Color::White } else { *color },
-                });
+                for (x, y) in &coords {
+                    ctx.draw(&Circle::new(
+                        *x,
+                        *y,
+                        1.6,
+                        if *editing { Color::White } else { *color },
+                    ));
+                }
             }
         });
 
     frame.render_widget(canvas, area);
 }
-
 fn draw_fan_detail(frame: &mut Frame, area: Rect, app: &App) {
     let block = panel(" 曲线明细 ");
     let inner = block.inner(area);

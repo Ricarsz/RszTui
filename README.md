@@ -36,7 +36,7 @@ sudo rsztui
 
 ## 当前版本
 
-`0.12.2` · Arch / CachyOS · 需要 `asusctl`、`NetworkManager`，必须 `sudo` 运行（`doctor` 除外）。
+`0.12.3` · Arch / CachyOS · 需要 `asusctl`、`NetworkManager`，必须 `sudo` 运行（`doctor` 除外）。
 
 ## 许可
 

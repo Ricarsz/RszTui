@@ -210,6 +210,7 @@ fn temperatures() -> Vec<(String, f32)> {
         let Ok(files) = fs::read_dir(&dir) else {
             continue;
         };
+        let mut sensors: Vec<(String, f32)> = Vec::new();
         for file in files.filter_map(|e| e.ok()) {
             let name = file.file_name().to_string_lossy().into_owned();
             let Some(stem) = name.strip_suffix("_input") else {
@@ -231,12 +232,23 @@ fn temperatures() -> Vec<(String, f32)> {
             let label = fs::read_to_string(dir.join(format!("{stem}_label")))
                 .map(|v| v.trim().to_string())
                 .unwrap_or_else(|_| chip.clone());
-            let label = if label.is_empty() {
-                chip.clone()
-            } else {
-                label
-            };
-            let label = format!("{label} ({chip})");
+            sensors.push((label, celsius));
+        }
+        if sensors.is_empty() {
+            continue;
+        }
+
+        // 一块 NVMe 通常有 Composite / Sensor 1 / Sensor 2 三个读数。
+        // 仪表盘只保留该盘的最高温度，避免一块盘占满整个列表。
+        if chip == "nvme" {
+            if let Some((_, celsius)) = sensors.iter().max_by(|a, b| a.1.total_cmp(&b.1)) {
+                result.push((nvme_label(&dir), *celsius));
+            }
+            continue;
+        }
+
+        for (sensor, celsius) in sensors {
+            let label = temperature_label(&dir, &chip, &sensor);
             if result.iter().any(|(existing, _)| *existing == label) {
                 continue;
             }
@@ -247,4 +259,43 @@ fn temperatures() -> Vec<(String, f32)> {
     result.sort_by(|a, b| b.1.total_cmp(&a.1));
     result.truncate(8);
     result
+}
+
+fn nvme_label(dir: &Path) -> String {
+    let model = fs::read_to_string(dir.join("device/model"))
+        .map(|v| v.trim().to_string())
+        .unwrap_or_default();
+    if model.is_empty() {
+        "NVMe".into()
+    } else {
+        format!("{model} (NVMe)")
+    }
+}
+
+fn temperature_label(dir: &Path, chip: &str, sensor: &str) -> String {
+    match chip {
+        "k10temp" => format!("CPU ({sensor})"),
+        "amdgpu" => "核显 (amdgpu)".into(),
+        "spd5118" => dimm_label(dir),
+        "acpitz" => "ACPI 温区".into(),
+        _ if sensor.is_empty() || sensor == chip => chip.into(),
+        _ => format!("{sensor} ({chip})"),
+    }
+}
+
+fn dimm_label(dir: &Path) -> String {
+    let address = fs::canonicalize(dir.join("device"))
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default();
+    if address.ends_with("0050") {
+        "内存 1 (SPD)".into()
+    } else if address.ends_with("0051") {
+        "内存 2 (SPD)".into()
+    } else {
+        "内存 (SPD)".into()
+    }
 }
