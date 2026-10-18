@@ -1,6 +1,6 @@
 [package]
-name = "rogtui"
-version = "0.2.0"
+name = "rsztui"
+version = "0.3.0"
 edition = "2024"
 description = "ASUS TUF 终端控制台：性能模式、电池、功耗、风扇、灯光与网络"
 license = "MIT"
@@ -17,5 +17,5 @@ toml = "0.8"
 unicode-width = "0.2"
 
 [[bin]]
-name = "rogtui"
+name = "rsztui"
 path = "src/main.rs"

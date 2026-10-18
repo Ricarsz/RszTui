@@ -8,7 +8,7 @@ use crate::nm;
 
 #[derive(Parser)]
 #[command(
-    name = "rogtui",
+    name = "rsztui",
     version,
     about = "ASUS TUF 终端控制台",
     long_about = "性能模式、电池上限、功耗、风扇、灯光与 NetworkManager 的终端控制台。无子命令时启动 TUI。"
@@ -224,7 +224,7 @@ pub enum HotspotCmd {
     On {
         #[arg(long)]
         password: String,
-        #[arg(long, default_value = "rogtui-hotspot")]
+        #[arg(long, default_value = "rsztui-hotspot")]
         ssid: String,
     },
     Off,

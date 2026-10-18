@@ -435,7 +435,7 @@ impl App {
 
         match key.code {
             KeyCode::Char('q') => {
-                self.confirm("退出", "退出 rogtui？", Pending::Quit);
+                self.confirm("退出", "退出 rsztui？", Pending::Quit);
             }
             KeyCode::Char('r') => {
                 self.refresh_slow();
@@ -528,8 +528,8 @@ impl App {
                 self.status = format!("已连接 Wi-Fi：{ssid}");
             }
             InputAction::Hotspot => {
-                nm::hotspot(&value, "rogtui-hotspot")?;
-                self.status = "热点已开启：rogtui-hotspot".into();
+                nm::hotspot(&value, "rsztui-hotspot")?;
+                self.status = "热点已开启：rsztui-hotspot".into();
             }
         }
         self.status_err = false;
@@ -1140,11 +1140,11 @@ impl App {
 
     fn toggle_hotspot(&mut self) {
         if nm::hotspot_active() {
-            self.confirm("关闭热点", "关闭 rogtui-hotspot？", Pending::HotspotOff);
+            self.confirm("关闭热点", "关闭 rsztui-hotspot？", Pending::HotspotOff);
         } else {
             self.modal = Some(Modal::Input {
                 title: "开启热点".into(),
-                prompt: "热点 SSID：rogtui-hotspot，密码（可改）".into(),
+                prompt: "热点 SSID：rsztui-hotspot，密码（可改）".into(),
                 value: random_password(),
                 masked: false,
                 action: InputAction::Hotspot,
@@ -1555,7 +1555,7 @@ fn random_password() -> String {
             .map(|b| CHARS[*b as usize % CHARS.len()] as char)
             .collect();
     }
-    "rogtui2026".into()
+    "rsztui2026".into()
 }
 
 fn ip_form_summary(form: &IpForm) -> String {

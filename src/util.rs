@@ -5,9 +5,9 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-/// 是否以 root 运行。开发调试时可用 ROGTUI_SKIP_ROOT_CHECK=1 跳过。
+/// 是否以 root 运行。开发调试时可用 RSZTUI_SKIP_ROOT_CHECK=1 跳过。
 pub fn is_root() -> bool {
-    if env::var_os("ROGTUI_SKIP_ROOT_CHECK").is_some() {
+    if env::var_os("RSZTUI_SKIP_ROOT_CHECK").is_some() {
         return true;
     }
     // SAFETY: geteuid 没有前置条件。

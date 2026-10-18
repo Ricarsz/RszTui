@@ -1,4 +1,4 @@
-# rogtui
+# RszTui
 
 ASUS TUF 的终端控制台。Rust + [ratatui](https://ratatui.rs/)，底层调用 `asusctl` 和 NetworkManager 的 `nmcli`。
 
@@ -20,23 +20,23 @@ ASUS TUF 的终端控制台。Rust + [ratatui](https://ratatui.rs/)，底层调�
 
 - `asusctl` / `asusd`（Arch：`asusctl` 包），并已启用 `asusd.service`
 - NetworkManager（`nmcli`）
-- 本工具**必须以 root 运行**：`sudo rogtui`
+- 本工具**必须以 root 运行**：`sudo rsztui`
 
 启动时如果不是 root 会直接提示退出。
 
 ## 构建与安装
 
 ```bash
-cd rogtui
+cd RszTui
 make                 # cargo build --release
-sudo make install    # 安装到 /usr/local/bin/rogtui
+sudo make install    # 安装到 /usr/local/bin/rsztui
 ```
 
 或者：
 
 ```bash
 cargo build --release
-sudo install -Dm755 target/release/rogtui /usr/local/bin/rogtui
+sudo install -Dm755 target/release/rsztui /usr/local/bin/rsztui
 ```
 
 卸载：`sudo make uninstall`。
@@ -44,74 +44,74 @@ sudo install -Dm755 target/release/rogtui /usr/local/bin/rogtui
 ## 使用
 
 ```bash
-sudo rogtui                 # 启动 TUI
-sudo rogtui status          # 状态汇总
-sudo rogtui --json status   # 给脚本/waybar 用
+sudo rsztui                 # 启动 TUI
+sudo rsztui status          # 状态汇总
+sudo rsztui --json status   # 给脚本/waybar 用
 ```
 
 ### 性能与功耗
 
 ```bash
-sudo rogtui profile get
-sudo rogtui profile set performance
-sudo rogtui profile default ac performance
-sudo rogtui profile default battery quiet
+sudo rsztui profile get
+sudo rsztui profile set performance
+sudo rsztui profile default ac performance
+sudo rsztui profile default battery quiet
 
-sudo rogtui power preset performance
-sudo rogtui power apply --pl1 45 --pl2 55 --pl3 65
-sudo rogtui power apply --gpu-tgp 70 --gpu-temp 80
+sudo rsztui power preset performance
+sudo rsztui power apply --pl1 45 --pl2 55 --pl3 65
+sudo rsztui power apply --gpu-tgp 70 --gpu-temp 80
 ```
 
 ### 电池
 
 ```bash
-sudo rogtui battery info
-sudo rogtui battery limit 80
-sudo rogtui battery oneshot
+sudo rsztui battery info
+sudo rsztui battery limit 80
+sudo rsztui battery oneshot
 ```
 
 ### GPU
 
 ```bash
-sudo rogtui gpu get
-sudo rogtui gpu set hybrid --yes    # 需要重启
+sudo rsztui gpu get
+sudo rsztui gpu set hybrid --yes    # 需要重启
 ```
 
 ### 网络
 
 ```bash
-sudo rogtui net status
-sudo rogtui net wifi list
-sudo rogtui net wifi connect "MyWiFi" --password 'secret'
-sudo rogtui net wifi connect "MyWiFi" --password 'secret' --no-up  # 只建配置
-sudo rogtui net radio off
-sudo rogtui net ip show mt3600
-sudo rogtui net ip set mt3600 --method manual \
+sudo rsztui net status
+sudo rsztui net wifi list
+sudo rsztui net wifi connect "MyWiFi" --password 'secret'
+sudo rsztui net wifi connect "MyWiFi" --password 'secret' --no-up  # 只建配置
+sudo rsztui net radio off
+sudo rsztui net ip show mt3600
+sudo rsztui net ip set mt3600 --method manual \
   --address 192.168.31.50/24 --gateway 192.168.31.1 --dns 1.1.1.1,8.8.8.8
-sudo rogtui net ip set mt3600 --method auto --dns 1.1.1.1
+sudo rsztui net ip set mt3600 --method auto --dns 1.1.1.1
 
-sudo rogtui net vpn list
-sudo rogtui net vpn up myvpn
-sudo rogtui net conn up mt3600
-sudo rogtui net conn delete old-connection
-sudo rogtui net hotspot on --password 'hotspot123' --ssid rogtui-hotspot
-sudo rogtui net hotspot off
+sudo rsztui net vpn list
+sudo rsztui net vpn up myvpn
+sudo rsztui net conn up mt3600
+sudo rsztui net conn delete old-connection
+sudo rsztui net hotspot on --password 'hotspot123' --ssid rsztui-hotspot
+sudo rsztui net hotspot off
 ```
 
 ### 风扇与灯光
 
 ```bash
-sudo rogtui fan list
-sudo rogtui fan save 我的配置
-sudo rogtui fan apply 我的配置
-sudo rogtui fan delete 我的配置
-sudo rogtui fan default
-sudo rogtui fan enable
-sudo rogtui fan disable
+sudo rsztui fan list
+sudo rsztui fan save 我的配置
+sudo rsztui fan apply 我的配置
+sudo rsztui fan delete 我的配置
+sudo rsztui fan default
+sudo rsztui fan enable
+sudo rsztui fan disable
 
-sudo rogtui aura next
-sudo rogtui aura prev
-sudo rogtui aura static ff8800
+sudo rsztui aura next
+sudo rsztui aura prev
+sudo rsztui aura static ff8800
 ```
 
 ## 快捷键
@@ -159,7 +159,7 @@ IPv4 编辑：`j/k` 选择字段，`Enter` 切换方法/下一项，直接输入
 
 ## 配置
 
-首次运行生成 `~/.config/rogtui/config.toml`，包含：
+首次运行生成 `~/.config/rsztui/config.toml`，包含：
 
 - 三套功耗预设（静音/均衡/性能）
 - 保存的风扇预设（原始 PWM 值）
@@ -183,14 +183,14 @@ sudo cp -a /etc/asusd /etc/asusd.bak
 ## 安全说明
 
 - TUI 以 root 运行，请只在本机终端使用。
-- Wi-Fi/热点密码不会放进命令行参数（会出现在 `/proc/*/cmdline`），而是写入临时内容后落到 `/etc/NetworkManager/system-connections/`（权限 0600、root），再 `nmcli connection reload`；不会保存到 rogtui 配置里。
+- Wi-Fi/热点密码不会放进命令行参数（会出现在 `/proc/*/cmdline`），而是写入临时内容后落到 `/etc/NetworkManager/system-connections/`（权限 0600、root），再 `nmcli connection reload`；不会保存到 rsztui 配置里。
 - 网络修改前有二次确认；IP/网关/DNS 会做基本格式校验。
 
 ## 开发
 
 ```bash
 # 非 root 调试只读功能（仅开发用）
-ROGTUI_SKIP_ROOT_CHECK=1 ./target/debug/rogtui status
+RSZTUI_SKIP_ROOT_CHECK=1 ./target/debug/rsztui status
 
 cargo test
 cargo clippy --all-targets -- -D warnings
@@ -216,7 +216,7 @@ src/
 - 功耗/TGP 属性因机型而异，缺少的项自动隐藏；能力来源是 `asusctl armoury list`。
 - GPU 模式修改必须重启，TUI 不会自动重启。
 - 已有同名 Wi-Fi 配置时直接复用，暂不支持在工具内改密码；需要时先删除该连接再重连。
-- 热点固定连接 id 为 `rogtui-hotspot`，TUI 内 SSID 固定；CLI 可指定 SSID。
+- 热点固定连接 id 为 `rsztui-hotspot`，TUI 内 SSID 固定；CLI 可指定 SSID。
 - 网络只处理 IPv4；IPv6 仍由 NetworkManager 默认策略管理。
 - DoT 依赖 NetworkManager + systemd-resolved；DoH 不原生支持。
 - 温度列表依赖 `hwmon` 标签，不同机型差异较大。

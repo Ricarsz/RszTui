@@ -10,10 +10,10 @@ build:
 	$(CARGO) build --release
 
 install: build
-	install -Dm755 target/release/rogtui $(DESTDIR)$(BINDIR)/rogtui
+	install -Dm755 target/release/rsztui $(DESTDIR)$(BINDIR)/rsztui
 
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/rogtui
+	rm -f $(DESTDIR)$(BINDIR)/rsztui
 
 test:
 	$(CARGO) test

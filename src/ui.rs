@@ -62,7 +62,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
         .unwrap_or_else(|| "上限未知".into());
 
     let line = Line::from(vec![
-        Span::styled(" ROGTUI ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
+        Span::styled(" RszTui ", Style::new().fg(Color::Black).bg(ACCENT).bold()),
         Span::raw("  ASUS TUF 终端控制台"),
         Span::raw("    "),
         Span::styled(
@@ -1555,7 +1555,7 @@ fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled("  版本      ", Style::new().fg(DIM)),
             Span::styled(
-                format!("rogtui {}", env!("CARGO_PKG_VERSION")),
+                format!("RszTui {}", env!("CARGO_PKG_VERSION")),
                 Style::new().fg(Color::Gray),
             ),
         ]),

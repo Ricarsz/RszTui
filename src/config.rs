@@ -106,7 +106,7 @@ fn default_presets() -> Vec<PowerPreset> {
 
 impl Config {
     pub fn path() -> PathBuf {
-        util::real_user_home().join(".config/rogtui/config.toml")
+        util::real_user_home().join(".config/rsztui/config.toml")
     }
 
     pub fn load() -> Result<Self> {
