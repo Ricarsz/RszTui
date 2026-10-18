@@ -6,10 +6,10 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use ratatui::DefaultTerminal;
 
 use crate::asus::{self, BatteryInfo, GpuMode, PowerField, PowerSource, Profile, ProfileState};
-use crate::config::Config;
+use crate::config::{Config, FanPreset};
+use crate::nm;
 use crate::sys::{Collector, Snapshot};
 use crate::ui;
-use crate::util;
 
 pub const HISTORY: usize = 60;
 
@@ -70,19 +70,73 @@ pub enum PerfFocus {
     Power,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct NetDevice {
-    pub name: String,
-    pub kind: String,
-    pub state: String,
-    pub connection: String,
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NetView {
+    Connections,
+    Wifi,
+    Vpn,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct NetSummary {
-    pub devices: Vec<NetDevice>,
-    pub wifi_enabled: Option<bool>,
-    pub ssid: Option<String>,
+impl NetView {
+    pub const ALL: [NetView; 3] = [NetView::Connections, NetView::Wifi, NetView::Vpn];
+
+    pub fn zh(self) -> &'static str {
+        match self {
+            NetView::Connections => "连接",
+            NetView::Wifi => "Wi-Fi",
+            NetView::Vpn => "VPN",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            NetView::Connections => NetView::Wifi,
+            NetView::Wifi => NetView::Vpn,
+            NetView::Vpn => NetView::Connections,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct IpForm {
+    pub conn: String,
+    pub method: String,
+    pub address: String,
+    pub gateway: String,
+    pub dns: String,
+    pub dot: i32,
+    pub sel: usize,
+}
+
+impl IpForm {
+    pub const LABELS: [&'static str; 5] = ["IPv4 方法", "地址", "网关", "DNS", "DoT"];
+
+    pub fn value(&self, index: usize) -> String {
+        match index {
+            0 => self.method.clone(),
+            1 => self.address.clone(),
+            2 => self.gateway.clone(),
+            3 => self.dns.clone(),
+            4 => match self.dot {
+                -1 => "默认".into(),
+                0 => "关闭".into(),
+                1 => "机会性".into(),
+                2 => "强制".into(),
+                _ => "默认".into(),
+            },
+            _ => String::new(),
+        }
+    }
+
+    pub fn editable(&self, index: usize) -> bool {
+        (1..=3).contains(&index) && self.method == "manual"
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum InputAction {
+    Wifi { ssid: String, key_mgmt: String },
+    Hotspot,
 }
 
 #[derive(Debug)]
@@ -95,6 +149,15 @@ pub enum Pending {
     BatteryLimit(u8),
     Oneshot,
     Gpu(GpuMode),
+    NetApply(IpForm),
+    NetDelete(String),
+    Radio(bool),
+    FanApply(usize),
+    FanSave,
+    FanDelete(usize),
+    FanDefault,
+    FanToggle(bool),
+    HotspotOff,
     Quit,
 }
 
@@ -108,6 +171,13 @@ pub enum Modal {
     Message {
         title: String,
         body: String,
+    },
+    Input {
+        title: String,
+        prompt: String,
+        value: String,
+        masked: bool,
+        action: InputAction,
     },
 }
 
@@ -127,9 +197,20 @@ pub struct App {
     pub gpu_sel: usize,
     pub fan_curves: Vec<asus::FanCurve>,
     pub fan_enabled: String,
+    pub fan_sel: usize,
     pub led: String,
+    pub aura_color: usize,
     pub tuning: bool,
-    pub net: NetSummary,
+    pub net_view: NetView,
+    pub net_sel: usize,
+    pub devices: Vec<nm::Device>,
+    pub connections: Vec<nm::ConnectionInfo>,
+    pub wifi: Vec<nm::WifiAp>,
+    pub vpns: Vec<nm::ConnectionInfo>,
+    pub ssid: Option<String>,
+    pub wifi_enabled: Option<bool>,
+    pub ip_form: Option<IpForm>,
+    pub net_ipv4: Option<nm::Ipv4Settings>,
     pub snap: Snapshot,
     pub cpu_hist: VecDeque<u64>,
     pub mem_hist: VecDeque<u64>,
@@ -141,7 +222,6 @@ pub struct App {
     pub status_err: bool,
     pub modal: Option<Modal>,
     pub quit: bool,
-    backed_up: bool,
     last_slow: Instant,
     last_tick: Instant,
     collector: Collector,
@@ -174,9 +254,20 @@ impl App {
             gpu_sel: 1,
             fan_curves: Vec::new(),
             fan_enabled: String::new(),
+            fan_sel: 0,
             led: "未知".into(),
+            aura_color: 0,
             tuning: false,
-            net: NetSummary::default(),
+            net_view: NetView::Connections,
+            net_sel: 0,
+            devices: Vec::new(),
+            connections: Vec::new(),
+            wifi: Vec::new(),
+            vpns: Vec::new(),
+            ssid: None,
+            wifi_enabled: None,
+            ip_form: None,
+            net_ipv4: None,
             snap: Snapshot::default(),
             cpu_hist: VecDeque::with_capacity(HISTORY),
             mem_hist: VecDeque::with_capacity(HISTORY),
@@ -188,7 +279,6 @@ impl App {
             status_err: false,
             modal: None,
             quit: false,
-            backed_up: false,
             last_slow: Instant::now(),
             last_tick: Instant::now(),
             collector: Collector::default(),
@@ -253,6 +343,10 @@ impl App {
             return self.handle_modal_key(key);
         }
 
+        if self.ip_form.is_some() {
+            return self.handle_ip_form_key(key);
+        }
+
         match key.code {
             KeyCode::Char('q') => {
                 self.confirm("退出", "退出 rogtui？", Pending::Quit);
@@ -281,6 +375,23 @@ impl App {
     }
 
     fn handle_modal_key(&mut self, key: KeyEvent) -> Result<()> {
+        if let Some(Modal::Input { value, .. }) = &mut self.modal {
+            match key.code {
+                KeyCode::Esc => self.modal = None,
+                KeyCode::Backspace => {
+                    value.pop();
+                }
+                KeyCode::Enter => {
+                    if let Some(Modal::Input { value, action, .. }) = self.modal.take() {
+                        self.submit_input(action, value)?;
+                    }
+                }
+                KeyCode::Char(c) if !c.is_control() => value.push(c),
+                _ => {}
+            }
+            return Ok(());
+        }
+
         match key.code {
             KeyCode::Esc => {
                 self.modal = None;
@@ -294,6 +405,25 @@ impl App {
         Ok(())
     }
 
+    fn submit_input(&mut self, action: InputAction, value: String) -> Result<()> {
+        if value.trim().is_empty() {
+            bail!("输入不能为空");
+        }
+        match action {
+            InputAction::Wifi { ssid, key_mgmt } => {
+                nm::wifi_connect(&ssid, Some(&value), &key_mgmt, true)?;
+                self.status = format!("已连接 Wi-Fi：{ssid}");
+            }
+            InputAction::Hotspot => {
+                nm::hotspot(&value, "rogtui-hotspot")?;
+                self.status = "热点已开启：rogtui-hotspot".into();
+            }
+        }
+        self.status_err = false;
+        self.refresh_slow();
+        Ok(())
+    }
+
     fn switch_tab(&mut self, tab: Tab) {
         self.tab = tab;
         self.cfg.ui.last_tab = tab.index();
@@ -304,7 +434,9 @@ impl App {
         match self.tab {
             Tab::Performance => self.handle_performance_key(key)?,
             Tab::Battery => self.handle_battery_key(key)?,
+            Tab::Fan => self.handle_fan_key(key)?,
             Tab::Lighting => self.handle_lighting_key(key)?,
+            Tab::Network => self.handle_network_key(key)?,
             _ => {}
         }
         Ok(())
@@ -470,12 +602,426 @@ impl App {
         Ok(())
     }
 
+    fn handle_fan_key(&mut self, key: KeyEvent) -> Result<()> {
+        let len = self.cfg.fan_presets.len();
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') if len > 0 => {
+                self.fan_sel = (self.fan_sel + 1) % len;
+            }
+            KeyCode::Up | KeyCode::Char('k') if len > 0 => {
+                self.fan_sel = (self.fan_sel + len - 1) % len;
+            }
+            KeyCode::Char('p') if len > 0 => {
+                let preset = self.cfg.fan_presets[self.fan_sel].clone();
+                self.confirm(
+                    "套用风扇预设",
+                    format!(
+                        "把「{}」应用到 {} 模式？\n\nCPU: {}\nGPU: {}",
+                        preset.name,
+                        preset.profile.zh(),
+                        pretty_fan_data(&preset.cpu),
+                        pretty_fan_data(&preset.gpu)
+                    ),
+                    Pending::FanApply(self.fan_sel),
+                );
+            }
+            KeyCode::Char('s') => {
+                self.confirm(
+                    "保存风扇预设",
+                    "把当前曲线的百分比值保存为预设？",
+                    Pending::FanSave,
+                );
+            }
+            KeyCode::Char('x') if len > 0 => {
+                let preset = self.cfg.fan_presets[self.fan_sel].clone();
+                self.confirm(
+                    "删除风扇预设",
+                    format!("删除「{}」？", preset.name),
+                    Pending::FanDelete(self.fan_sel),
+                );
+            }
+            KeyCode::Char('d') => {
+                self.confirm(
+                    "恢复默认风扇",
+                    "把当前性能模式的风扇曲线恢复为固件默认？",
+                    Pending::FanDefault,
+                );
+            }
+            KeyCode::Char('e') => {
+                let enabled = !self.fan_curves.iter().any(|c| c.enabled);
+                self.confirm(
+                    "风扇曲线开关",
+                    format!(
+                        "{}当前性能模式的风扇曲线？",
+                        if enabled { "启用" } else { "停用" }
+                    ),
+                    Pending::FanToggle(enabled),
+                );
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn handle_lighting_key(&mut self, key: KeyEvent) -> Result<()> {
-        if matches!(key.code, KeyCode::Char('b')) {
-            asus::led_next()?;
-            self.refresh_slow();
-            self.status = "键盘亮度已切换".into();
+        match key.code {
+            KeyCode::Char('b') => {
+                asus::led_next()?;
+                self.refresh_slow();
+                self.status = "键盘亮度已切换".into();
+                self.status_err = false;
+            }
+            KeyCode::Char('e') => {
+                asus::aura_next()?;
+                self.status = "已切换到下一个灯效".into();
+                self.status_err = false;
+            }
+            KeyCode::Char('E') => {
+                asus::aura_prev()?;
+                self.status = "已切换到上一个灯效".into();
+                self.status_err = false;
+            }
+            KeyCode::Char('c') => {
+                self.aura_color = (self.aura_color + 1) % AURA_COLORS.len();
+            }
+            KeyCode::Char('S') => {
+                let (name, hex) = AURA_COLORS[self.aura_color % AURA_COLORS.len()];
+                asus::aura_static(hex)?;
+                self.status = format!("灯效：静态 {name}");
+                self.status_err = false;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    pub fn net_len(&self) -> usize {
+        match self.net_view {
+            NetView::Connections => self.connections.len(),
+            NetView::Wifi => self.wifi.len(),
+            NetView::Vpn => self.vpns.len(),
+        }
+    }
+
+    fn net_move(&mut self, delta: isize) {
+        let len = self.net_len();
+        if len == 0 {
+            self.net_sel = 0;
+            self.refresh_net_detail();
+            return;
+        }
+        let len = len as isize;
+        self.net_sel = ((self.net_sel as isize + delta).rem_euclid(len)) as usize;
+        self.refresh_net_detail();
+    }
+
+    fn refresh_net_detail(&mut self) {
+        self.net_ipv4 = if self.net_view == NetView::Connections {
+            self.connections
+                .get(self.net_sel)
+                .and_then(|c| nm::connection_ipv4(&c.name).ok())
+        } else {
+            None
+        };
+    }
+
+    fn rescan_wifi(&mut self, rescan: bool) -> Result<()> {
+        match nm::wifi_scan(rescan) {
+            Ok(list) => {
+                self.wifi = list;
+                self.net_sel = self.net_sel.min(self.wifi.len().saturating_sub(1));
+                self.status = if rescan {
+                    format!("扫描完成，发现 {} 个 SSID", self.wifi.len())
+                } else {
+                    "Wi-Fi 列表已刷新".into()
+                };
+                self.status_err = false;
+                Ok(())
+            }
+            Err(err) => {
+                self.status = format!("Wi-Fi 扫描失败：{err:#}");
+                self.status_err = true;
+                Ok(())
+            }
+        }
+    }
+
+    fn selected_connection(&self) -> Option<nm::ConnectionInfo> {
+        if self.net_view != NetView::Connections {
+            return None;
+        }
+        self.connections.get(self.net_sel).cloned()
+    }
+
+    fn handle_network_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Char('v') => {
+                self.net_view = self.net_view.next();
+                self.net_sel = 0;
+                self.status = format!("网络视图：{}", self.net_view.zh());
+                self.status_err = false;
+                self.refresh_net_detail();
+                if self.net_view == NetView::Wifi {
+                    self.rescan_wifi(true)?;
+                }
+            }
+            KeyCode::Char('s') => {
+                self.refresh_net_detail();
+                if self.net_view == NetView::Wifi {
+                    self.rescan_wifi(true)?;
+                } else {
+                    self.refresh_slow();
+                    self.status = "已刷新".into();
+                    self.status_err = false;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => self.net_move(1),
+            KeyCode::Up | KeyCode::Char('k') => self.net_move(-1),
+            KeyCode::Char('u') => self.net_up()?,
+            KeyCode::Char('d') => self.net_down()?,
+            KeyCode::Char('x') => self.net_delete(),
+            KeyCode::Char('o') => {
+                let on = !self.wifi_enabled.unwrap_or(false);
+                self.confirm(
+                    "无线开关",
+                    format!("{} Wi-Fi？", if on { "启用" } else { "禁用" }),
+                    Pending::Radio(on),
+                );
+            }
+            KeyCode::Char('t') => self.toggle_hotspot(),
+            KeyCode::Enter => self.net_enter()?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn net_up(&mut self) -> Result<()> {
+        match self.net_view {
+            NetView::Connections => {
+                if let Some(conn) = self.selected_connection() {
+                    nm::connection_up(&conn.name)?;
+                    self.status = format!("已激活 {}", conn.name);
+                    self.refresh_slow();
+                }
+            }
+            NetView::Vpn => {
+                if let Some(vpn) = self.vpns.get(self.net_sel).cloned() {
+                    nm::connection_up(&vpn.name)?;
+                    self.status = format!("VPN 已连接：{}", vpn.name);
+                    self.refresh_slow();
+                }
+            }
+            NetView::Wifi => self.rescan_wifi(true)?,
+        }
+        self.status_err = false;
+        Ok(())
+    }
+
+    fn net_down(&mut self) -> Result<()> {
+        match self.net_view {
+            NetView::Connections => {
+                if let Some(conn) = self.selected_connection() {
+                    nm::connection_down(&conn.name)?;
+                    self.status = format!("已断开 {}", conn.name);
+                    self.refresh_slow();
+                }
+            }
+            NetView::Vpn => {
+                if let Some(vpn) = self.vpns.get(self.net_sel).cloned() {
+                    nm::connection_down(&vpn.name)?;
+                    self.status = format!("VPN 已断开：{}", vpn.name);
+                    self.refresh_slow();
+                }
+            }
+            NetView::Wifi => {}
+        }
+        self.status_err = false;
+        Ok(())
+    }
+
+    fn net_delete(&mut self) {
+        let target = match self.net_view {
+            NetView::Connections => self.connections.get(self.net_sel).cloned(),
+            NetView::Vpn => self.vpns.get(self.net_sel).cloned(),
+            NetView::Wifi => None,
+        };
+        if let Some(target) = target {
+            self.confirm(
+                "删除连接",
+                format!("删除连接「{}」？此操作不可撤销。", target.name),
+                Pending::NetDelete(target.name),
+            );
+        }
+    }
+
+    fn net_enter(&mut self) -> Result<()> {
+        match self.net_view {
+            NetView::Connections => self.open_ip_form(),
+            NetView::Wifi => self.connect_wifi_selected(),
+            NetView::Vpn => self.net_up(),
+        }
+    }
+
+    fn open_ip_form(&mut self) -> Result<()> {
+        let Some(conn) = self.selected_connection() else {
+            bail!("没有选中连接");
+        };
+        let settings = nm::connection_ipv4(&conn.name)?;
+        self.ip_form = Some(IpForm {
+            conn: conn.name,
+            method: settings.method,
+            address: settings.addresses,
+            gateway: settings.gateway,
+            dns: settings.dns,
+            dot: settings.dot,
+            sel: 0,
+        });
+        self.status = "编辑 IPv4：j/k 选择，直接输入，a 应用，Esc 取消".into();
+        self.status_err = false;
+        Ok(())
+    }
+
+    fn connect_wifi_selected(&mut self) -> Result<()> {
+        let Some(ap) = self.wifi.get(self.net_sel).cloned() else {
+            bail!("没有选中 Wi-Fi");
+        };
+        if ap.in_use {
+            self.status = format!("{} 已连接", ap.ssid);
             self.status_err = false;
+            return Ok(());
+        }
+        if let Some(existing) = nm::wifi_profile(&ap.ssid)? {
+            nm::connection_up(&existing.name)?;
+            self.status = format!("已连接 Wi-Fi：{}", ap.ssid);
+            self.status_err = false;
+            self.refresh_slow();
+            return Ok(());
+        }
+
+        if ap.security.trim().is_empty() || ap.security.trim() == "--" {
+            nm::wifi_connect(&ap.ssid, None, "", true)?;
+            self.status = format!("已连接开放网络：{}", ap.ssid);
+            self.status_err = false;
+            self.refresh_slow();
+            return Ok(());
+        }
+        let key_mgmt = if ap.security.contains("WPA3") && !ap.security.contains("WPA2") {
+            "sae"
+        } else {
+            "wpa-psk"
+        };
+        self.modal = Some(Modal::Input {
+            title: "连接 Wi-Fi".into(),
+            prompt: format!("{}（{}）的密码", ap.ssid, ap.security),
+            value: String::new(),
+            masked: true,
+            action: InputAction::Wifi {
+                ssid: ap.ssid,
+                key_mgmt: key_mgmt.into(),
+            },
+        });
+        Ok(())
+    }
+
+    fn toggle_hotspot(&mut self) {
+        if nm::hotspot_active() {
+            self.confirm("关闭热点", "关闭 rogtui-hotspot？", Pending::HotspotOff);
+        } else {
+            self.modal = Some(Modal::Input {
+                title: "开启热点".into(),
+                prompt: "热点 SSID：rogtui-hotspot，密码（可改）".into(),
+                value: random_password(),
+                masked: false,
+                action: InputAction::Hotspot,
+            });
+        }
+    }
+
+    fn handle_ip_form_key(&mut self, key: KeyEvent) -> Result<()> {
+        let mut apply = None;
+        let mut close = false;
+
+        if let Some(form) = self.ip_form.as_mut() {
+            match key.code {
+                KeyCode::Esc => close = true,
+                KeyCode::Down | KeyCode::Char('j') => {
+                    form.sel = (form.sel + 1) % IpForm::LABELS.len();
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    form.sel = (form.sel + IpForm::LABELS.len() - 1) % IpForm::LABELS.len();
+                }
+                KeyCode::Enter | KeyCode::Char(' ') => match form.sel {
+                    0 => {
+                        form.method = if form.method == "manual" {
+                            "auto".into()
+                        } else {
+                            "manual".into()
+                        };
+                    }
+                    4 => {
+                        form.dot = match form.dot {
+                            -1 => 0,
+                            0 => 1,
+                            1 => 2,
+                            _ => -1,
+                        };
+                    }
+                    1..=3 => {
+                        form.sel = (form.sel + 1) % IpForm::LABELS.len();
+                    }
+                    _ => {}
+                },
+                KeyCode::Backspace => {
+                    if form.editable(form.sel) {
+                        match form.sel {
+                            1 => {
+                                form.address.pop();
+                            }
+                            2 => {
+                                form.gateway.pop();
+                            }
+                            3 => {
+                                form.dns.pop();
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if form.editable(form.sel) {
+                        match form.sel {
+                            1 => form.address.clear(),
+                            2 => form.gateway.clear(),
+                            3 => form.dns.clear(),
+                            _ => {}
+                        }
+                    }
+                }
+                KeyCode::Char('a') => apply = Some(form.clone()),
+                KeyCode::Char(c)
+                    if form.editable(form.sel)
+                        && (c.is_ascii_digit() || matches!(c, '.' | '/' | ',' | ' ')) =>
+                {
+                    match form.sel {
+                        1 => form.address.push(c),
+                        2 => form.gateway.push(c),
+                        3 => form.dns.push(c),
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if close {
+            self.ip_form = None;
+        }
+        if let Some(form) = apply {
+            self.confirm(
+                "应用网络设置",
+                ip_form_summary(&form),
+                Pending::NetApply(form),
+            );
         }
         Ok(())
     }
@@ -495,8 +1041,6 @@ impl App {
         }
 
         self.status_err = false;
-        self.ensure_backup()?;
-
         match pending {
             Pending::Quit => {}
             Pending::Profile(profile) => {
@@ -565,19 +1109,95 @@ impl App {
                 asus::gpu_set(mode)?;
                 self.status = format!("GPU 模式已设为{}，请重启生效", mode.zh());
             }
+            Pending::NetApply(form) => {
+                let settings = nm::Ipv4Settings {
+                    method: form.method.clone(),
+                    addresses: form.address.clone(),
+                    gateway: form.gateway.clone(),
+                    dns: form.dns.clone(),
+                    dot: form.dot,
+                };
+                nm::apply_ipv4(&form.conn, &settings)?;
+                self.ip_form = None;
+                self.status = format!("{} 的 IPv4 设置已应用", form.conn);
+            }
+            Pending::NetDelete(name) => {
+                nm::connection_delete(&name)?;
+                self.status = format!("已删除连接：{name}");
+            }
+            Pending::Radio(on) => {
+                nm::set_radio(on)?;
+                self.status = if on {
+                    "Wi-Fi 已启用"
+                } else {
+                    "Wi-Fi 已禁用"
+                }
+                .into();
+            }
+            Pending::HotspotOff => {
+                nm::hotspot_off()?;
+                self.status = "热点已关闭".into();
+            }
+            Pending::FanApply(index) => {
+                let preset = self
+                    .cfg
+                    .fan_presets
+                    .get(index)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("没有这个风扇预设"))?;
+                asus::fan_apply(preset.profile, &preset.cpu, &preset.gpu)?;
+                self.status = format!("已套用风扇预设：{}", preset.name);
+            }
+            Pending::FanSave => {
+                let profile = self.profile.map(|p| p.active).unwrap_or(Profile::Balanced);
+                let Some((cpu, gpu)) = asus::fan_data(&self.fan_curves) else {
+                    bail!("没有读到完整的 CPU/GPU 风扇曲线");
+                };
+                let name = format!("我的风扇 {}", profile.zh());
+                let preset = FanPreset {
+                    name: name.clone(),
+                    profile,
+                    cpu,
+                    gpu,
+                };
+                if let Some(existing) = self.cfg.fan_presets.iter_mut().find(|p| p.name == name) {
+                    *existing = preset;
+                } else {
+                    self.cfg.fan_presets.push(preset);
+                }
+                self.cfg.save()?;
+                self.fan_sel = self
+                    .fan_sel
+                    .min(self.cfg.fan_presets.len().saturating_sub(1));
+                self.status = format!("已保存风扇预设：{name}");
+            }
+            Pending::FanDelete(index) => {
+                if index < self.cfg.fan_presets.len() {
+                    let removed = self.cfg.fan_presets.remove(index);
+                    self.cfg.save()?;
+                    self.fan_sel = self
+                        .fan_sel
+                        .min(self.cfg.fan_presets.len().saturating_sub(1));
+                    self.status = format!("已删除风扇预设：{}", removed.name);
+                }
+            }
+            Pending::FanDefault => {
+                let profile = self.profile.map(|p| p.active).unwrap_or(Profile::Balanced);
+                asus::fan_default(profile)?;
+                self.status = format!("{} 的风扇曲线已恢复默认", profile.zh());
+            }
+            Pending::FanToggle(enabled) => {
+                let profile = self.profile.map(|p| p.active).unwrap_or(Profile::Balanced);
+                asus::fan_set_enabled(profile, enabled)?;
+                self.status = format!(
+                    "{} 的风扇曲线已{}",
+                    profile.zh(),
+                    if enabled { "启用" } else { "停用" }
+                );
+            }
         }
 
         self.refresh_slow();
-        Ok(())
-    }
-
-    fn ensure_backup(&mut self) -> Result<()> {
-        if self.backed_up {
-            return Ok(());
-        }
-        let dir = util::backup_asusd()?;
-        self.backed_up = true;
-        self.status = format!("配置已备份到 {}", dir.display());
         Ok(())
     }
 
@@ -640,7 +1260,25 @@ impl App {
             self.led = led;
         }
 
-        self.net = net_summary();
+        self.devices = nm::devices().unwrap_or_default();
+        self.connections = nm::connections()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|c| c.kind != "loopback")
+            .collect();
+        self.vpns = nm::vpn_list().unwrap_or_default();
+        self.ssid = nm::active_ssid().unwrap_or(None);
+        self.wifi_enabled = nm::wifi_enabled().ok();
+        if self.net_view == NetView::Wifi
+            && let Ok(list) = nm::wifi_scan(false)
+        {
+            self.wifi = list;
+        }
+        self.net_sel = self.net_sel.min(self.net_len().saturating_sub(1));
+        self.refresh_net_detail();
+        self.fan_sel = self
+            .fan_sel
+            .min(self.cfg.fan_presets.len().saturating_sub(1));
 
         if !errors.is_empty() {
             self.status = format!("刷新失败：{}", errors.join("；"));
@@ -656,70 +1294,67 @@ fn push_hist(hist: &mut VecDeque<u64>, value: u64) {
     hist.push_back(value);
 }
 
-fn net_summary() -> NetSummary {
-    let mut summary = NetSummary::default();
+pub const AURA_COLORS: [(&str, &str); 6] = [
+    ("红", "ff0000"),
+    ("橙", "ff8000"),
+    ("绿", "00ff00"),
+    ("青", "00ffff"),
+    ("蓝", "0000ff"),
+    ("白", "ffffff"),
+];
 
-    if let Ok(out) = util::run(
-        "nmcli",
-        &[
-            "-t",
-            "-f",
-            "DEVICE,TYPE,STATE,CONNECTION",
-            "device",
-            "status",
-        ],
-    ) {
-        for line in out.lines() {
-            let parts = split_nmcli(line);
-            if parts.len() < 4 {
-                continue;
-            }
-            summary.devices.push(NetDevice {
-                name: parts[0].clone(),
-                kind: parts[1].clone(),
-                state: parts[2].clone(),
-                connection: parts[3].clone(),
-            });
-        }
-    }
-
-    if let Ok(out) = util::run("nmcli", &["radio", "wifi"]) {
-        summary.wifi_enabled = Some(out.trim().eq_ignore_ascii_case("enabled"));
-    }
-
-    if let Ok(out) = util::run("nmcli", &["-t", "-f", "ACTIVE,SSID", "device", "wifi"]) {
-        for line in out.lines() {
-            let parts = split_nmcli(line);
-            if parts.first().map(String::as_str) == Some("yes")
-                && let Some(ssid) = parts.get(1)
-                && !ssid.is_empty()
-            {
-                summary.ssid = Some(ssid.clone());
-            }
-        }
-    }
-
-    summary
+fn pretty_fan_data(data: &str) -> String {
+    data.split(',')
+        .map(|point| match point.split_once('c') {
+            Some((temp, pwm)) => format!("{temp}°C:{pwm}"),
+            None => point.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("  ")
 }
 
-fn split_nmcli(line: &str) -> Vec<String> {
-    let mut result = Vec::new();
-    let mut current = String::new();
-    let mut escaped = false;
-    for ch in line.chars() {
-        if escaped {
-            current.push(ch);
-            escaped = false;
-        } else if ch == '\\' {
-            escaped = true;
-        } else if ch == ':' {
-            result.push(std::mem::take(&mut current));
-        } else {
-            current.push(ch);
-        }
+fn random_password() -> String {
+    use std::fs::File;
+    use std::io::Read;
+
+    let mut buf = [0u8; 16];
+    if let Ok(mut file) = File::open("/dev/urandom")
+        && file.read_exact(&mut buf).is_ok()
+    {
+        const CHARS: &[u8] = b"abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        return buf
+            .iter()
+            .take(12)
+            .map(|b| CHARS[*b as usize % CHARS.len()] as char)
+            .collect();
     }
-    result.push(current);
-    result
+    "rogtui2026".into()
+}
+
+fn ip_form_summary(form: &IpForm) -> String {
+    format!(
+        "连接：{}\n方法：{}\n地址：{}\n网关：{}\nDNS：{}\nDoT：{}",
+        form.conn,
+        form.method,
+        if form.address.is_empty() {
+            "-"
+        } else {
+            &form.address
+        },
+        if form.gateway.is_empty() {
+            "-"
+        } else {
+            &form.gateway
+        },
+        if form.dns.is_empty() { "-" } else { &form.dns },
+        match form.dot {
+            -1 => "默认",
+            0 => "关闭",
+            1 => "机会性",
+            2 => "强制",
+            _ => "默认",
+        }
+    )
 }
 
 fn help_text() -> String {
@@ -737,11 +1372,21 @@ fn help_text() -> String {
         "电池",
         "  h/l 调整上限   Enter 应用   o 单次充满",
         "",
+        "风扇",
+        "  j/k 选择预设   p 应用   s 保存当前曲线   x 删除",
+        "  d 恢复固件默认   e 启用/停用曲线",
+        "",
         "灯光",
-        "  b 切换键盘亮度",
+        "  b 切换键盘亮度   e/E 下一个/上一个灯效",
+        "  c 切换静态颜色   S 应用静态色",
+        "",
+        "网络",
+        "  v 切换 连接/Wi-Fi/VPN   j/k 选择   Enter 连接或编辑",
+        "  u 激活   d 断开   x 删除   o Wi-Fi 开关   t 热点",
+        "  IPv4 编辑：Enter 切换方法/下一项，直接输入，a 应用",
         "",
         "说明",
-        "  所有写入都会先备份 /etc/asusd/*.ron 到 /var/backups/rogtui/",
+        "  修改直接写入 asusd/NM，不生成备份文件",
         "  功耗值写入当前性能模式的 tuning，重启后由 asusd 自动恢复",
     ]
     .join("\n")
@@ -750,15 +1395,6 @@ fn help_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn splits_nmcli_escaped_separators() {
-        assert_eq!(
-            split_nmcli(r"wlan0:wifi:connected:My\:SSID"),
-            vec!["wlan0", "wifi", "connected", "My:SSID"]
-        );
-        assert_eq!(split_nmcli("a:b:c"), vec!["a", "b", "c"]);
-    }
 
     #[test]
     fn history_keeps_capacity() {

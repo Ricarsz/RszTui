@@ -2,6 +2,7 @@ mod app;
 mod asus;
 mod cli;
 mod config;
+mod nm;
 mod sys;
 mod ui;
 mod util;

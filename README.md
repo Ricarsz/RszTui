@@ -2,27 +2,19 @@
 
 ASUS TUF 的终端控制台。Rust + [ratatui](https://ratatui.rs/)，底层调用 `asusctl` 和 NetworkManager 的 `nmcli`。
 
-目标是替代 `rog-control-center` 的日常功能：切性能模式、限电池、调功耗、看风扇/温度、管网络。
+目标：替代 `rog-control-center` 的日常功能——切性能模式、限电池、调功耗、看风扇/温度、管网络。
 
-## 当前状态（v0.1 MVP）
-
-已实现：
+## 已实现
 
 - **仪表盘**：CPU/内存/网络实时曲线、温度列表、电池状态、ASUS 状态汇总
-- **性能**：Quiet/Balanced/Performance 切换、AC/电池默认模式、GPU 三档（集显/混合/独显直连）
-- **功耗**：PL1/PL2/PL3、dGPU TGP、Dynamic Boost、温度墙，预设 + 手动微调
+- **性能**：Quiet/Balanced/Performance 切换、AC/电池默认模式
+- **功耗**：PL1/PL2/PL3、dGPU TGP、Dynamic Boost、温度墙；预设 + 手动微调
 - **电池**：充电上限 20–100%、单次充满、容量/健康度/循环/功率
-- **风扇**：只读展示当前曲线与启用状态
-- **灯光**：键盘亮度切换（off/low/med/high）
-- **网络**：只读展示设备、连接状态、Wi-Fi 开关与 SSID
-- **CLI**：与 TUI 同能力的子命令，支持 `--json`
-
-下一批：
-
-- 网络写入：Wi-Fi 扫描/连接（密码走临时 keyfile，不落 argv）、DHCP/静态 IP、网关、DNS/DoT、连接增删改、VPN 启停、热点
-- 风扇：套用/保存预设、导入导出曲线
-- 灯光：Aura 灯效切换（static/breathe/rainbow/…）
-- 温度和功耗的更多传感器、图表缩放
+- **GPU**：集显/混合/独显直连（`asusctl armoury` 的 `dgpu_disable` + `gpu_mux_mode`，需重启）
+- **风扇**：查看/启用/停用曲线、恢复默认、保存/套用/删除预设（原始 PWM，无舍入误差）
+- **灯光**：键盘亮度、Aura 下一个/上一个灯效、静态颜色
+- **网络**：连接列表、Wi-Fi 扫描/连接/断开、DHCP/静态 IP、网关、DNS、DoT、VPN 启停、热点、无线开关、连接删除
+- **CLI**：与 TUI 同能力，支持 `--json`
 
 ## 依赖
 
@@ -30,14 +22,14 @@ ASUS TUF 的终端控制台。Rust + [ratatui](https://ratatui.rs/)，底层调�
 - NetworkManager（`nmcli`）
 - 本工具**必须以 root 运行**：`sudo rogtui`
 
-`asusctl` 的普通用户操作走 asusd 的 D-Bus；但本工具还会写 `/var/backups/rogtui`、调 `nmcli`，所以统一要求 sudo。启动时如果不是 root 会直接提示。
+启动时如果不是 root 会直接提示退出。
 
 ## 构建与安装
 
 ```bash
 cd rogtui
-make            # cargo build --release
-sudo make install   # 安装到 /usr/local/bin/rogtui
+make                 # cargo build --release
+sudo make install    # 安装到 /usr/local/bin/rogtui
 ```
 
 或者：
@@ -47,11 +39,7 @@ cargo build --release
 sudo install -Dm755 target/release/rogtui /usr/local/bin/rogtui
 ```
 
-卸载：
-
-```bash
-sudo make uninstall
-```
+卸载：`sudo make uninstall`。
 
 ## 使用
 
@@ -61,7 +49,7 @@ sudo rogtui status          # 状态汇总
 sudo rogtui --json status   # 给脚本/waybar 用
 ```
 
-常用子命令：
+### 性能与功耗
 
 ```bash
 sudo rogtui profile get
@@ -69,18 +57,61 @@ sudo rogtui profile set performance
 sudo rogtui profile default ac performance
 sudo rogtui profile default battery quiet
 
-sudo rogtui battery info
-sudo rogtui battery limit 80
-sudo rogtui battery oneshot
-
 sudo rogtui power preset performance
 sudo rogtui power apply --pl1 45 --pl2 55 --pl3 65
 sudo rogtui power apply --gpu-tgp 70 --gpu-temp 80
+```
 
+### 电池
+
+```bash
+sudo rogtui battery info
+sudo rogtui battery limit 80
+sudo rogtui battery oneshot
+```
+
+### GPU
+
+```bash
 sudo rogtui gpu get
-sudo rogtui gpu set hybrid --yes   # 需要重启
+sudo rogtui gpu set hybrid --yes    # 需要重启
+```
 
-sudo rogtui config          # 查看配置路径与预设
+### 网络
+
+```bash
+sudo rogtui net status
+sudo rogtui net wifi list
+sudo rogtui net wifi connect "MyWiFi" --password 'secret'
+sudo rogtui net wifi connect "MyWiFi" --password 'secret' --no-up  # 只建配置
+sudo rogtui net radio off
+sudo rogtui net ip show mt3600
+sudo rogtui net ip set mt3600 --method manual \
+  --address 192.168.31.50/24 --gateway 192.168.31.1 --dns 1.1.1.1,8.8.8.8
+sudo rogtui net ip set mt3600 --method auto --dns 1.1.1.1
+
+sudo rogtui net vpn list
+sudo rogtui net vpn up myvpn
+sudo rogtui net conn up mt3600
+sudo rogtui net conn delete old-connection
+sudo rogtui net hotspot on --password 'hotspot123' --ssid rogtui-hotspot
+sudo rogtui net hotspot off
+```
+
+### 风扇与灯光
+
+```bash
+sudo rogtui fan list
+sudo rogtui fan save 我的配置
+sudo rogtui fan apply 我的配置
+sudo rogtui fan delete 我的配置
+sudo rogtui fan default
+sudo rogtui fan enable
+sudo rogtui fan disable
+
+sudo rogtui aura next
+sudo rogtui aura prev
+sudo rogtui aura static ff8800
 ```
 
 ## 快捷键
@@ -111,42 +142,48 @@ sudo rogtui config          # 查看配置路径与预设
 
 电池页：`h` / `l` 调上限，`Enter` 应用，`o` 单次充满。
 
-灯光页：`b` 切换键盘亮度。
+风扇页：`j/k` 选预设，`p` 应用，`s` 保存当前，`x` 删除，`d` 恢复默认，`e` 启用/停用。
+
+灯光页：`b` 亮度，`e/E` 下一个/上一个灯效，`c` 选颜色，`S` 应用静态色。
+
+网络页：`v` 切换 连接/Wi-Fi/VPN，`j/k` 选择，`Enter` 连接或编辑 IPv4，`u` 激活，`d` 断开，`x` 删除，`o` 无线开关，`t` 热点，`s` 重新扫描 Wi-Fi。
+
+IPv4 编辑：`j/k` 选择字段，`Enter` 切换方法/下一项，直接输入地址/网关/DNS，`Backspace` 删除，`Ctrl+U` 清空，`a` 应用，`Esc` 取消。
 
 ## 配置
 
-首次运行会生成：
+首次运行生成 `~/.config/rogtui/config.toml`，包含：
 
-```
-~/.config/rogtui/config.toml
-```
+- 三套功耗预设（静音/均衡/性能）
+- 保存的风扇预设（原始 PWM 值）
+- 界面偏好
 
-包含三套功耗预设（静音/均衡/性能）和界面偏好。即使以 sudo 运行，也会通过 `SUDO_USER` 写入真实用户的家目录，而不是 `/root`。
+即使以 sudo 运行，也会通过 `SUDO_USER` 写入真实用户的家目录，而不是 `/root`。
 
-修改预设后重启 TUI 生效。`rogtui config` 可以查看当前预设。
-
-## 持久化与备份
+## 持久化
 
 - 性能模式、电池上限、PPT/TGP 都写入 `/etc/asusd/asusd.ron`，由 **asusd** 在开机和 AC/电池切换时自动恢复；不需要额外的 systemd 服务。
 - 功耗值写入**当前供电模式**（AC 或电池）下、**当前性能模式**的 tuning。想改电池那一套，就拔掉电源再调。
-- 每次写入前自动备份到 `/var/backups/rogtui/<时间戳>/`，包含 `asusd.ron`、`fan_curves.ron`、`aura_tuf.ron`。
-- 恢复备份：停掉 asusd，把文件拷回 `/etc/asusd/`，再启动 asusd。
+- 风扇曲线由 asusd 持久化在 `/etc/asusd/fan_curves.ron`。
+- 网络配置由 NetworkManager 持久化在 `/etc/NetworkManager/system-connections/`。
+
+**本工具不自动备份**（按你的要求）。需要留后路时手动：
+
+```bash
+sudo cp -a /etc/asusd /etc/asusd.bak
+```
 
 ## 安全说明
 
 - TUI 以 root 运行，请只在本机终端使用。
-- 下一批的 Wi-Fi 连接不会把密码放进命令行参数（会出现在 `/proc/*/cmdline`），而是写 0600 临时 keyfile 后 `nmcli connection load`，加载完立即删除。
-- 所有修改都有二次确认，并在写入前备份 asusd 配置。
+- Wi-Fi/热点密码不会放进命令行参数（会出现在 `/proc/*/cmdline`），而是写入临时内容后落到 `/etc/NetworkManager/system-connections/`（权限 0600、root），再 `nmcli connection reload`；不会保存到 rogtui 配置里。
+- 网络修改前有二次确认；IP/网关/DNS 会做基本格式校验。
 
 ## 开发
 
 ```bash
 # 非 root 调试只读功能（仅开发用）
 ROGTUI_SKIP_ROOT_CHECK=1 ./target/debug/rogtui status
-
-# 把备份写到可写目录，方便测试写入
-ROGTUI_SKIP_ROOT_CHECK=1 ROGTUI_BACKUP_DIR=/tmp/rogtui-backup \
-  ./target/debug/rogtui power apply --pl1 55
 
 cargo test
 cargo clippy --all-targets -- -D warnings
@@ -161,15 +198,19 @@ src/
   app.rs        TUI 状态、事件、刷新
   ui.rs         ratatui 渲染
   asus.rs       asusctl 封装与解析
+  nm.rs         NetworkManager 封装
   sys.rs        /proc、/sys 采样
   config.rs     TOML 配置
-  util.rs       命令执行、备份、家目录解析
+  util.rs       命令执行、nmcli 解析、家目录
 ```
 
 ## 已知限制
 
-- 功耗/TGP 属性因机型而异，缺少的项会自动隐藏；`asusctl armoury list` 是能力来源。
+- 功耗/TGP 属性因机型而异，缺少的项自动隐藏；能力来源是 `asusctl armoury list`。
 - GPU 模式修改必须重启，TUI 不会自动重启。
-- 风扇曲线目前只读；应用预设下一批实现。
-- 网络页目前只读。
-- 温度列表依赖 `hwmon` 暴露的标签，不同机型差异较大。
+- 已有同名 Wi-Fi 配置时直接复用，暂不支持在工具内改密码；需要时先删除该连接再重连。
+- 热点固定连接 id 为 `rogtui-hotspot`，TUI 内 SSID 固定；CLI 可指定 SSID。
+- 网络只处理 IPv4；IPv6 仍由 NetworkManager 默认策略管理。
+- DoT 依赖 NetworkManager + systemd-resolved；DoH 不原生支持。
+- 温度列表依赖 `hwmon` 标签，不同机型差异较大。
+- 不自动备份，写坏了需要手动恢复。

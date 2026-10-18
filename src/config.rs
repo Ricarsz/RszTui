@@ -13,6 +13,8 @@ pub struct Config {
     pub ui: UiConfig,
     #[serde(default = "default_presets")]
     pub power_presets: Vec<PowerPreset>,
+    #[serde(default)]
+    pub fan_presets: Vec<FanPreset>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,6 +23,15 @@ pub struct UiConfig {
     pub last_tab: usize,
     #[serde(default = "default_true")]
     pub sparkline: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FanPreset {
+    pub name: String,
+    pub profile: Profile,
+    /// asusctl 原始 PWM 格式：31c:26,50c:38,...
+    pub cpu: String,
+    pub gpu: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +51,7 @@ impl Default for Config {
         Self {
             ui: UiConfig::default(),
             power_presets: default_presets(),
+            fan_presets: Vec::new(),
         }
     }
 }

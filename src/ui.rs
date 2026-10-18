@@ -4,8 +4,9 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, Gauge, Paragraph, Sparkline, Wrap};
 
-use crate::app::{App, Modal, NetSummary, Tab};
+use crate::app::{AURA_COLORS, App, IpForm, Modal, NetView, Tab};
 use crate::asus::{GpuMode, Profile};
+use crate::nm;
 use crate::util;
 
 const ACCENT: Color = Color::Rgb(90, 200, 220);
@@ -29,7 +30,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let body = Layout::horizontal([Constraint::Length(23), Constraint::Min(0)]).split(chunks[1]);
     draw_sidebar(frame, body[0], app);
     draw_body(frame, body[1], app);
+    let main_area = body[1];
     draw_footer(frame, chunks[2], app);
+
+    if let Some(form) = &app.ip_form {
+        draw_ip_form(frame, main_area, form);
+    }
 
     if let Some(modal) = &app.modal {
         draw_modal(frame, area, modal);
@@ -132,12 +138,10 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::from(vec![
         Span::styled("  网络  ", Style::new().fg(DIM)),
         Span::styled(
-            app.net
-                .ssid
+            app.ssid
                 .clone()
                 .or_else(|| {
-                    app.net
-                        .devices
+                    app.devices
                         .iter()
                         .find(|d| d.state.contains("connected") && d.kind != "loopback")
                         .map(|d| d.connection.clone())
@@ -796,7 +800,14 @@ fn draw_battery(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_fan(frame: &mut Frame, area: Rect, app: &App) {
-    let block = panel(" 风扇曲线（只读） ");
+    let cols =
+        Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).split(area);
+    draw_fan_curves(frame, cols[0], app);
+    draw_fan_presets(frame, cols[1], app);
+}
+
+fn draw_fan_curves(frame: &mut Frame, area: Rect, app: &App) {
+    let block = panel(" 当前风扇曲线 ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -828,28 +839,12 @@ fn draw_fan(frame: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::raw(""));
     }
 
-    if app.fan_enabled.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  asusctl 没有返回风扇状态",
-            Style::new().fg(DIM),
-        )));
-    } else {
-        lines.push(Line::from(Span::styled(
-            " 当前启用曲线",
-            Style::new().fg(DIM).bold(),
-        )));
-        lines.push(Line::from(Span::styled(
-            format!(
-                " {}",
-                util::truncate(&app.fan_enabled, (inner.width as usize).saturating_sub(2))
-            ),
-            Style::new().fg(DIM),
-        )));
-    }
-
-    lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        " 下一批支持：套用/保存预设、导入导出曲线",
+        " e 启用/停用   d 恢复固件默认   s 保存当前为预设",
+        Style::new().fg(DIM),
+    )));
+    lines.push(Line::from(Span::styled(
+        " 曲线按性能模式保存，切换模式会套用对应曲线",
         Style::new().fg(DIM),
     )));
 
@@ -859,12 +854,54 @@ fn draw_fan(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+fn draw_fan_presets(frame: &mut Frame, area: Rect, app: &App) {
+    let block = panel(" 风扇预设 ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines = Vec::new();
+    if app.cfg.fan_presets.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  还没有预设",
+            Style::new().fg(DIM),
+        )));
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(
+            "  按 s 把当前曲线保存为预设",
+            Style::new().fg(DIM),
+        )));
+    } else {
+        for (index, preset) in app.cfg.fan_presets.iter().enumerate() {
+            let selected = index == app.fan_sel;
+            let marker = if selected { "▶" } else { " " };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {marker} {}", preset.name),
+                    if selected {
+                        Style::new().fg(ACCENT).bold()
+                    } else {
+                        Style::new().fg(Color::Gray)
+                    },
+                ),
+                Span::styled(format!("  [{}]", preset.profile.zh()), Style::new().fg(DIM)),
+            ]));
+        }
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(
+            " p 应用   x 删除   s 覆盖保存",
+            Style::new().fg(DIM),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
 fn draw_lighting(frame: &mut Frame, area: Rect, app: &App) {
     let block = panel(" 键盘灯光 ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let lines = vec![
+    let mut lines = vec![
         Line::from(vec![
             Span::styled("  当前亮度  ", Style::new().fg(DIM)),
             Span::styled(app.led.clone(), Style::new().fg(ACCENT).bold()),
@@ -874,90 +911,466 @@ fn draw_lighting(frame: &mut Frame, area: Rect, app: &App) {
             " b 切换亮度（off → low → med → high）",
             Style::new().fg(DIM),
         )),
+        Line::from(Span::styled(
+            " e / E 下一个 / 上一个灯效",
+            Style::new().fg(DIM),
+        )),
         Line::raw(""),
-        Line::from(Span::styled(
-            " Aura 灯效：static / breathe / rainbow-cycle / rainbow-wave",
-            Style::new().fg(DIM),
-        )),
-        Line::from(Span::styled(
-            "          stars / rain / ripple / pulse / laser",
-            Style::new().fg(DIM),
-        )),
-        Line::from(Span::styled(
-            " 下一批支持：灯效切换与颜色/速度调整",
-            Style::new().fg(WARN),
-        )),
+        Line::from(Span::styled("  静态颜色  ", Style::new().fg(DIM))),
     ];
 
-    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+    let mut swatches = Vec::new();
+    for (index, (name, hex)) in AURA_COLORS.iter().enumerate() {
+        let selected = index == app.aura_color;
+        swatches.push(Span::styled(
+            format!(" {} {} ", if selected { "▶" } else { " " }, name),
+            Style::new().fg(hex_color(hex)),
+        ));
+        swatches.push(Span::raw(" "));
+        if index % 3 == 2 {
+            lines.push(Line::from(std::mem::take(&mut swatches)));
+        }
+    }
+    if !swatches.is_empty() {
+        lines.push(Line::from(swatches));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        " c 切换颜色   S 应用静态色",
+        Style::new().fg(DIM),
+    )));
+    lines.push(Line::from(Span::styled(
+        " 灯效列表：static / breathe / rainbow-cycle / rainbow-wave / stars / rain / ripple / pulse",
+        Style::new().fg(DIM),
+    )));
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        inner,
+    );
 }
 
 fn draw_network(frame: &mut Frame, area: Rect, app: &App) {
-    let block = panel(" 网络（只读） ");
+    let block = panel(" 网络 ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let mut lines = Vec::new();
-    lines.push(Line::from(vec![
-        Span::styled("  Wi-Fi  ", Style::new().fg(DIM)),
+    let rows = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(inner);
+    let header = Line::from(vec![
+        Span::styled(" Wi-Fi ", Style::new().fg(DIM)),
         Span::styled(
-            match app.net.wifi_enabled {
+            match app.wifi_enabled {
                 Some(true) => "已启用",
                 Some(false) => "已禁用",
                 None => "未知",
             },
-            Style::new().fg(if app.net.wifi_enabled == Some(true) {
+            Style::new().fg(if app.wifi_enabled == Some(true) {
                 GOOD
             } else {
                 WARN
             }),
         ),
-        Span::styled("   当前 SSID  ", Style::new().fg(DIM)),
+        Span::styled("   SSID ", Style::new().fg(DIM)),
         Span::styled(
-            app.net.ssid.clone().unwrap_or_else(|| "-".into()),
+            app.ssid.clone().unwrap_or_else(|| "-".into()),
             Style::new().fg(Color::Gray),
         ),
-    ]));
-    lines.push(Line::raw(""));
-
-    for device in &app.net.devices {
-        if device.kind == "loopback" {
-            continue;
-        }
-        let state_color = if device.state.contains("connected") && device.kind != "wifi-p2p" {
-            GOOD
-        } else if device.state.contains("unavailable") {
-            BAD
+        if nm::hotspot_active() {
+            Span::styled("   热点已开启", Style::new().fg(WARN))
         } else {
-            DIM
-        };
-        lines.push(Line::from(vec![
+            Span::raw("")
+        },
+    ]);
+    frame.render_widget(Paragraph::new(header), rows[0]);
+
+    let cols =
+        Layout::horizontal([Constraint::Percentage(56), Constraint::Percentage(44)]).split(rows[1]);
+    draw_net_list(frame, cols[0], app);
+    draw_net_details(frame, cols[1], app);
+}
+
+fn draw_net_list(frame: &mut Frame, area: Rect, app: &App) {
+    let tabs: Vec<Span> = NetView::ALL
+        .iter()
+        .map(|view| {
             Span::styled(
-                format!("  {}", util::truncate(&device.name, 12)),
-                Style::new().fg(ACCENT),
-            ),
-            Span::styled(
-                format!("  {:<10}", util::truncate(&device.kind, 10)),
-                Style::new().fg(DIM),
-            ),
-            Span::styled(
-                format!("  {:<24}", util::truncate(&device.state, 24)),
-                Style::new().fg(state_color),
-            ),
-            Span::styled(
-                util::truncate(&device.connection, 22),
-                Style::new().fg(Color::Gray),
-            ),
-        ]));
+                format!(" {} ", view.zh()),
+                if *view == app.net_view {
+                    Style::new().fg(Color::Black).bg(ACCENT).bold()
+                } else {
+                    Style::new().fg(DIM)
+                },
+            )
+        })
+        .collect();
+
+    let block = panel(" 列表 ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
+    frame.render_widget(Paragraph::new(Line::from(tabs)), rows[0]);
+
+    let mut lines = Vec::new();
+    match app.net_view {
+        NetView::Connections => {
+            for (index, conn) in app.connections.iter().enumerate() {
+                let selected = index == app.net_sel;
+                let marker = if selected { "▶" } else { " " };
+                let active = if conn.active {
+                    Span::styled(" [已连接]", Style::new().fg(GOOD))
+                } else {
+                    Span::raw("")
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!(" {marker} {}", util::truncate(&conn.name, 20)),
+                        if selected {
+                            Style::new().fg(ACCENT).bold()
+                        } else {
+                            Style::new().fg(Color::Gray)
+                        },
+                    ),
+                    Span::styled(
+                        format!("  {}", util::truncate(short_kind(&conn.kind), 14)),
+                        Style::new().fg(DIM),
+                    ),
+                    active,
+                ]));
+            }
+        }
+        NetView::Wifi => {
+            for (index, ap) in app.wifi.iter().enumerate() {
+                let selected = index == app.net_sel;
+                let marker = if selected { "▶" } else { " " };
+                let bars = signal_bar(ap.signal);
+                let in_use = if ap.in_use {
+                    Span::styled(" [已连接]", Style::new().fg(GOOD))
+                } else {
+                    Span::raw("")
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!(" {marker} {}", util::truncate(&ap.ssid, 24)),
+                        if selected {
+                            Style::new().fg(ACCENT).bold()
+                        } else {
+                            Style::new().fg(Color::Gray)
+                        },
+                    ),
+                    Span::styled(
+                        format!("  {bars} {:>3}%", ap.signal),
+                        Style::new().fg(signal_color(ap.signal)),
+                    ),
+                    Span::styled(
+                        format!("  {}", util::truncate(&ap.security, 12)),
+                        Style::new().fg(DIM),
+                    ),
+                    in_use,
+                ]));
+            }
+        }
+        NetView::Vpn => {
+            for (index, vpn) in app.vpns.iter().enumerate() {
+                let selected = index == app.net_sel;
+                let marker = if selected { "▶" } else { " " };
+                let active = if vpn.active {
+                    Span::styled(" [已连接]", Style::new().fg(GOOD))
+                } else {
+                    Span::styled(" [未连接]", Style::new().fg(DIM))
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!(" {marker} {}", util::truncate(&vpn.name, 26)),
+                        if selected {
+                            Style::new().fg(ACCENT).bold()
+                        } else {
+                            Style::new().fg(Color::Gray)
+                        },
+                    ),
+                    active,
+                ]));
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  没有条目，按 s 扫描或检查 NetworkManager",
+            Style::new().fg(DIM),
+        )));
+    }
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        rows[1],
+    );
+}
+
+fn draw_net_details(frame: &mut Frame, area: Rect, app: &App) {
+    let block = panel(" 详情 ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines = Vec::new();
+    match app.net_view {
+        NetView::Connections => {
+            if let Some(conn) = app.connections.get(app.net_sel) {
+                lines.push(detail("名称", conn.name.clone()));
+                lines.push(detail("类型", short_kind(&conn.kind).to_string()));
+                lines.push(detail(
+                    "设备",
+                    if conn.device.is_empty() {
+                        "-".into()
+                    } else {
+                        conn.device.clone()
+                    },
+                ));
+                lines.push(detail(
+                    "状态",
+                    if conn.active {
+                        "已连接"
+                    } else {
+                        "未连接"
+                    }
+                    .into(),
+                ));
+                lines.push(Line::raw(""));
+                if let Some(ip) = &app.net_ipv4 {
+                    lines.push(detail(
+                        "IPv4",
+                        if ip.method == "manual" {
+                            format!(
+                                "手动  {}",
+                                if ip.addresses.is_empty() {
+                                    "-"
+                                } else {
+                                    &ip.addresses
+                                }
+                            )
+                        } else {
+                            "自动 (DHCP)".into()
+                        },
+                    ));
+                    if !ip.gateway.is_empty() {
+                        lines.push(detail("网关", ip.gateway.clone()));
+                    }
+                    if !ip.dns.is_empty() {
+                        lines.push(detail("DNS", ip.dns.clone()));
+                    }
+                    if ip.dot != -1 {
+                        lines.push(detail(
+                            "DoT",
+                            match ip.dot {
+                                0 => "关闭",
+                                1 => "机会性",
+                                2 => "强制",
+                                _ => "默认",
+                            }
+                            .into(),
+                        ));
+                    }
+                }
+                lines.push(Line::raw(""));
+                lines.push(Line::from(Span::styled(
+                    " Enter 编辑 IPv4 / DNS",
+                    Style::new().fg(DIM),
+                )));
+                lines.push(Line::from(Span::styled(
+                    " u 激活   d 断开   x 删除",
+                    Style::new().fg(DIM),
+                )));
+            }
+        }
+        NetView::Wifi => {
+            if let Some(ap) = app.wifi.get(app.net_sel) {
+                lines.push(detail("SSID", ap.ssid.clone()));
+                lines.push(detail("信号", format!("{}%", ap.signal)));
+                lines.push(detail(
+                    "加密",
+                    if ap.security.is_empty() {
+                        "开放".into()
+                    } else {
+                        ap.security.clone()
+                    },
+                ));
+                lines.push(detail(
+                    "状态",
+                    if ap.in_use { "已连接" } else { "未连接" }.into(),
+                ));
+                lines.push(Line::raw(""));
+                lines.push(Line::from(Span::styled(
+                    " Enter 连接（密码写入 NM keyfile）",
+                    Style::new().fg(DIM),
+                )));
+                lines.push(Line::from(Span::styled(
+                    " s 重新扫描",
+                    Style::new().fg(DIM),
+                )));
+            }
+        }
+        NetView::Vpn => {
+            if let Some(vpn) = app.vpns.get(app.net_sel) {
+                lines.push(detail("名称", vpn.name.clone()));
+                lines.push(detail(
+                    "状态",
+                    if vpn.active { "已连接" } else { "未连接" }.into(),
+                ));
+                lines.push(Line::raw(""));
+                lines.push(Line::from(Span::styled(
+                    " Enter/u 连接   d 断开",
+                    Style::new().fg(DIM),
+                )));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    " 没有 VPN 连接",
+                    Style::new().fg(DIM),
+                )));
+            }
+        }
     }
 
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        " 下一批支持：Wi-Fi 扫描连接、手动 IP/网关/DNS、VPN、热点",
-        Style::new().fg(WARN),
+        " v 切换视图   o 无线开关   t 热点",
+        Style::new().fg(DIM),
     )));
 
-    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn draw_ip_form(frame: &mut Frame, area: Rect, form: &IpForm) {
+    let vertical = Layout::vertical([
+        Constraint::Percentage(22),
+        Constraint::Percentage(56),
+        Constraint::Percentage(22),
+    ])
+    .split(area);
+    let horizontal = Layout::horizontal([
+        Constraint::Percentage(10),
+        Constraint::Percentage(80),
+        Constraint::Percentage(10),
+    ])
+    .split(vertical[1]);
+    let popup = horizontal[1];
+
+    frame.render_widget(Clear, popup);
+    let block = Block::bordered()
+        .title(Span::styled(
+            format!(" 编辑 IPv4 · {} ", form.conn),
+            Style::new().fg(ACCENT).bold(),
+        ))
+        .border_style(Style::new().fg(ACCENT));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(inner);
+    let mut lines = Vec::new();
+
+    for (index, label) in IpForm::LABELS.iter().enumerate() {
+        let selected = index == form.sel;
+        let marker = if selected { "▶" } else { " " };
+        let style = if selected {
+            Style::new()
+                .bg(Color::Rgb(45, 52, 62))
+                .fg(Color::White)
+                .bold()
+        } else {
+            Style::new().fg(Color::Gray)
+        };
+
+        let mut value = form.value(index);
+        if index == 0 {
+            value = if value == "manual" {
+                "手动 (manual)".into()
+            } else {
+                "自动 (DHCP)".into()
+            };
+        }
+        if form.editable(index) && selected {
+            value.push('▏');
+        }
+
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {marker} {:<10}", label), style),
+            Span::styled(
+                format!("  {value}"),
+                style.fg(if selected { ACCENT } else { Color::Gray }),
+            ),
+        ]));
+        if form.method == "auto" && (1..=3).contains(&index) {
+            lines.push(Line::from(Span::styled(
+                "              切换到手动后可编辑",
+                Style::new().fg(DIM),
+            )));
+        }
+    }
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![
+            Line::from(Span::styled(
+                " j/k 选择   Enter 切换/下一项   直接输入编辑   Backspace 删除",
+                Style::new().fg(DIM),
+            )),
+            Line::from(Span::styled(
+                " a 应用   Esc 取消   Ctrl+U 清空当前项",
+                Style::new().fg(DIM),
+            )),
+        ])),
+        rows[1],
+    );
+}
+
+fn detail(label: &'static str, value: String) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("  {label:<6}"), Style::new().fg(DIM)),
+        Span::styled(util::truncate(&value, 34), Style::new().fg(Color::Gray)),
+    ])
+}
+
+fn short_kind(kind: &str) -> &str {
+    if kind.contains("ethernet") {
+        "ethernet"
+    } else if kind.contains("wireless") {
+        "wifi"
+    } else if kind.contains("wireguard") {
+        "wireguard"
+    } else if kind.contains("vpn") {
+        "vpn"
+    } else {
+        kind
+    }
+}
+
+fn signal_bar(signal: u8) -> String {
+    let filled = ((signal as usize + 9) / 20).min(5);
+    format!("{}{}", "▮".repeat(filled), "▯".repeat(5 - filled))
+}
+
+fn signal_color(signal: u8) -> Color {
+    if signal >= 70 {
+        GOOD
+    } else if signal >= 40 {
+        WARN
+    } else {
+        BAD
+    }
+}
+
+fn hex_color(hex: &str) -> Color {
+    let value = u32::from_str_radix(hex, 16).unwrap_or(0xffffff);
+    Color::Rgb(
+        ((value >> 16) & 0xff) as u8,
+        ((value >> 8) & 0xff) as u8,
+        (value & 0xff) as u8,
+    )
 }
 
 fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
@@ -965,7 +1378,6 @@ fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let backup_dir = "/var/backups/rogtui";
     let lines = vec![
         Line::from(vec![
             Span::styled("  配置文件  ", Style::new().fg(DIM)),
@@ -973,10 +1385,6 @@ fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
                 crate::config::Config::path().display().to_string(),
                 Style::new().fg(Color::Gray),
             ),
-        ]),
-        Line::from(vec![
-            Span::styled("  备份目录  ", Style::new().fg(DIM)),
-            Span::styled(backup_dir, Style::new().fg(Color::Gray)),
         ]),
         Line::from(vec![
             Span::styled("  asusd 配置 ", Style::new().fg(DIM)),
@@ -1040,7 +1448,9 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Tab::Dashboard => " Tab 切换  r 刷新  ? 帮助  q 退出",
         Tab::Performance => " f 焦点  j/k 选择  Enter 应用  a/b 设默认  g/G GPU  ? 帮助",
         Tab::Battery => " h/l 上限  Enter 应用  o 单次充满  ? 帮助",
-        Tab::Lighting => " b 切换亮度  ? 帮助",
+        Tab::Fan => " j/k 预设  p 应用  s 保存  d 默认  e 启用/停用  ? 帮助",
+        Tab::Lighting => " b 亮度  e/E 灯效  c 颜色  S 静态色  ? 帮助",
+        Tab::Network => " v 视图  j/k 选择  Enter 连接/编辑  u/d 启停  x 删除  o 无线  t 热点",
         _ => " Tab 切换  1-7 跳转  r 刷新  ? 帮助  q 退出",
     };
     frame.render_widget(
@@ -1069,9 +1479,23 @@ fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal) {
 
     frame.render_widget(Clear, popup);
 
-    let (title, body, confirm) = match modal {
-        Modal::Confirm { title, body, .. } => (title.as_str(), body.as_str(), true),
-        Modal::Message { title, body } => (title.as_str(), body.as_str(), false),
+    let (title, body, confirm): (String, String, bool) = match modal {
+        Modal::Confirm { title, body, .. } => (title.clone(), body.clone(), true),
+        Modal::Message { title, body } => (title.clone(), body.clone(), false),
+        Modal::Input {
+            title,
+            prompt,
+            value,
+            masked,
+            ..
+        } => {
+            let shown = if *masked {
+                "●".repeat(value.chars().count())
+            } else {
+                value.clone()
+            };
+            (title.clone(), format!("{prompt}\n\n  {shown}▏"), true)
+        }
     };
 
     let block = Block::bordered()
@@ -1084,10 +1508,7 @@ fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal) {
     frame.render_widget(block, popup);
 
     let parts = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(inner);
-    frame.render_widget(
-        Paragraph::new(body.to_string()).wrap(Wrap { trim: false }),
-        parts[0],
-    );
+    frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), parts[0]);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             if confirm {
@@ -1140,18 +1561,5 @@ fn temp_color(value: f32) -> Color {
         WARN
     } else {
         GOOD
-    }
-}
-
-#[allow(dead_code)]
-fn net_state_color(summary: &NetSummary, device: &str) -> Color {
-    if summary
-        .devices
-        .iter()
-        .any(|d| d.name == device && d.state.contains("connected"))
-    {
-        GOOD
-    } else {
-        DIM
     }
 }

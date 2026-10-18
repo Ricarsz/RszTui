@@ -2,7 +2,6 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 
@@ -87,47 +86,6 @@ pub fn chown_to_sudo_user(path: &Path) {
     let _ = std::os::unix::fs::chown(path, Some(uid), Some(gid));
 }
 
-pub fn timestamp() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// 备份 asusd 的配置文件，返回本次备份目录。
-pub fn backup_asusd() -> Result<PathBuf> {
-    let stamp = timestamp();
-    let base = env::var_os("ROGTUI_BACKUP_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/backups/rogtui"));
-    let dir = base.join(stamp.to_string());
-    fs::create_dir_all(&dir).with_context(|| format!("无法创建备份目录 {}", dir.display()))?;
-
-    let files = [
-        "/etc/asusd/asusd.ron",
-        "/etc/asusd/fan_curves.ron",
-        "/etc/asusd/aura_tuf.ron",
-    ];
-
-    let mut copied = Vec::new();
-    for file in files {
-        let src = Path::new(file);
-        if !src.exists() {
-            continue;
-        }
-        let name = src.file_name().unwrap_or_default();
-        let dst = dir.join(name);
-        fs::copy(src, &dst).with_context(|| format!("备份 {} 失败", src.display()))?;
-        copied.push(name.to_string_lossy().into_owned());
-    }
-
-    if copied.is_empty() {
-        bail!("没有找到可备份的 asusd 配置文件");
-    }
-
-    Ok(dir)
-}
-
 pub fn human_bytes(value: f64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut value = value.max(0.0);
@@ -162,4 +120,39 @@ pub fn truncate(text: &str, width: usize) -> String {
         out.push(ch);
     }
     out
+}
+
+/// 解析 nmcli -t 输出：`\:` 表示冒号，`\\` 表示反斜杠。
+pub fn split_nmcli(line: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut current = String::new();
+    let mut escaped = false;
+    for ch in line.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == ':' {
+            result.push(std::mem::take(&mut current));
+        } else {
+            current.push(ch);
+        }
+    }
+    result.push(current);
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splits_nmcli_escaped_separators() {
+        assert_eq!(
+            split_nmcli(r"wlan0:wifi:connected:My\:SSID"),
+            vec!["wlan0", "wifi", "connected", "My:SSID"]
+        );
+        assert_eq!(split_nmcli("a:b:c"), vec!["a", "b", "c"]);
+    }
 }

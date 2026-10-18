@@ -541,6 +541,104 @@ pub fn led_next() -> Result<()> {
     Ok(())
 }
 
+pub fn fan_apply(profile: Profile, cpu: &str, gpu: &str) -> Result<()> {
+    profile_set(profile)?;
+    util::run(
+        "asusctl",
+        &[
+            "fan-curve",
+            "--mod-profile",
+            profile.asus(),
+            "--fan",
+            "cpu",
+            "--data",
+            cpu,
+        ],
+    )?;
+    util::run(
+        "asusctl",
+        &[
+            "fan-curve",
+            "--mod-profile",
+            profile.asus(),
+            "--fan",
+            "gpu",
+            "--data",
+            gpu,
+        ],
+    )?;
+    util::run(
+        "asusctl",
+        &[
+            "fan-curve",
+            "--mod-profile",
+            profile.asus(),
+            "--enable-fan-curves",
+            "true",
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn fan_default(profile: Profile) -> Result<()> {
+    profile_set(profile)?;
+    util::run("asusctl", &["fan-curve", "--default"])?;
+    Ok(())
+}
+
+pub fn fan_set_enabled(profile: Profile, enabled: bool) -> Result<()> {
+    util::run(
+        "asusctl",
+        &[
+            "fan-curve",
+            "--mod-profile",
+            profile.asus(),
+            "--enable-fan-curves",
+            if enabled { "true" } else { "false" },
+        ],
+    )?;
+    Ok(())
+}
+
+/// 把曲线转成 asusctl 需要的原始 PWM 格式："31c:26,50c:38,..."。
+/// 省略 % 时 asusctl 按 0-255 处理，避免百分比换算带来的舍入误差。
+pub fn fan_data(curves: &[FanCurve]) -> Option<(String, String)> {
+    let mut cpu = None;
+    let mut gpu = None;
+
+    for curve in curves {
+        let points: Vec<String> = curve
+            .temp
+            .iter()
+            .zip(curve.pwm.iter())
+            .map(|(temp, pwm)| format!("{temp}c:{pwm}"))
+            .collect();
+        let data = points.join(",");
+        if curve.fan.eq_ignore_ascii_case("cpu") {
+            cpu = Some(data);
+        } else if curve.fan.eq_ignore_ascii_case("gpu") {
+            gpu = Some(data);
+        }
+    }
+
+    Some((cpu?, gpu?))
+}
+
+pub fn aura_next() -> Result<()> {
+    util::run("asusctl", &["aura", "effect", "--next-mode"])?;
+    Ok(())
+}
+
+pub fn aura_prev() -> Result<()> {
+    util::run("asusctl", &["aura", "effect", "--prev-mode"])?;
+    Ok(())
+}
+
+pub fn aura_static(colour: &str) -> Result<()> {
+    util::run("asusctl", &["aura", "effect", "static", "-c", colour])?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
