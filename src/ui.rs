@@ -1,8 +1,10 @@
+use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Clear, Gauge, Paragraph, Sparkline, Wrap};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AURA_COLORS, App, IpForm, Modal, MouseAction, MouseTarget, NetView, Tab};
 use crate::asus::{self, GpuMode, Profile};
@@ -43,7 +45,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 
     if let Some(modal) = &app.modal {
-        draw_modal(frame, area, modal);
+        draw_modal(frame, area, app, modal);
     }
 }
 
@@ -586,6 +588,19 @@ fn draw_profiles(frame: &mut Frame, area: Rect, app: &App) {
         " f 切换焦点到功耗",
         Style::new().fg(DIM),
     )));
+    let y = inner.y + lines.len() as u16;
+    if let Some(line) = action_bar(
+        app,
+        inner,
+        y,
+        &[
+            ("切换", MouseAction::PerfSwitch),
+            ("AC", MouseAction::PerfAc),
+            ("电池", MouseAction::PerfBat),
+        ],
+    ) {
+        lines.push(line);
+    }
 
     frame.render_widget(
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
@@ -715,6 +730,18 @@ fn draw_power_fields(frame: &mut Frame, area: Rect, app: &App) {
         " 写入当前供电模式的 tuning，重启由 asusd 恢复",
         Style::new().fg(DIM),
     )));
+    let y = inner.y + lines.len() as u16;
+    if let Some(line) = action_bar(
+        app,
+        inner,
+        y,
+        &[
+            ("应用", MouseAction::PerfPowerApply),
+            ("套用预设", MouseAction::PerfPresetApply),
+        ],
+    ) {
+        lines.push(line);
+    }
 
     frame.render_widget(
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
@@ -841,20 +868,40 @@ fn draw_battery(frame: &mut Frame, area: Rect, app: &App) {
     ]);
     frame.render_widget(Paragraph::new(limit_line), rows[6]);
 
-    frame.render_widget(
-        Paragraph::new(Text::from(vec![
-            Line::raw(""),
-            Line::from(Span::styled(
-                " o 单次充满（忽略上限）",
-                Style::new().fg(DIM),
-            )),
-            Line::from(Span::styled(
-                " 上限越低越省电池，长期插电建议 60-80%",
-                Style::new().fg(DIM),
-            )),
-        ])),
+    let mut hints = vec![
+        Line::raw(""),
+        Line::from(Span::styled(
+            " o 单次充满（忽略上限）",
+            Style::new().fg(DIM),
+        )),
+        Line::from(Span::styled(
+            " 上限越低越省电池，长期插电建议 60-80%",
+            Style::new().fg(DIM),
+        )),
+    ];
+    if let Some(line) = action_bar(
+        app,
         rows[7],
-    );
+        rows[7].y + 3,
+        &[
+            (
+                "-5",
+                MouseAction::Key(KeyCode::Char('h'), KeyModifiers::NONE),
+            ),
+            (
+                "+5",
+                MouseAction::Key(KeyCode::Char('l'), KeyModifiers::NONE),
+            ),
+            ("应用", MouseAction::Key(KeyCode::Enter, KeyModifiers::NONE)),
+            (
+                "单次充满",
+                MouseAction::Key(KeyCode::Char('o'), KeyModifiers::NONE),
+            ),
+        ],
+    ) {
+        hints.push(line);
+    }
+    frame.render_widget(Paragraph::new(Text::from(hints)), rows[7]);
 }
 
 fn draw_fan(frame: &mut Frame, area: Rect, app: &App) {
@@ -1014,6 +1061,36 @@ fn draw_fan_detail(frame: &mut Frame, area: Rect, app: &App) {
         " d 恢复固件默认   s 保存当前为预设",
         Style::new().fg(DIM),
     )));
+    let y = inner.y + lines.len() as u16;
+    if let Some(line) = action_bar(
+        app,
+        inner,
+        y,
+        &[
+            (
+                "编辑CPU",
+                MouseAction::Key(KeyCode::Char('i'), KeyModifiers::NONE),
+            ),
+            (
+                "编辑GPU",
+                MouseAction::Key(KeyCode::Char('I'), KeyModifiers::NONE),
+            ),
+            (
+                "应用预设",
+                MouseAction::Key(KeyCode::Char('p'), KeyModifiers::NONE),
+            ),
+            (
+                "保存",
+                MouseAction::Key(KeyCode::Char('s'), KeyModifiers::NONE),
+            ),
+            (
+                "启停",
+                MouseAction::Key(KeyCode::Char('e'), KeyModifiers::NONE),
+            ),
+        ],
+    ) {
+        lines.push(line);
+    }
 
     frame.render_widget(
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
@@ -1200,6 +1277,32 @@ fn draw_lighting_status(frame: &mut Frame, area: Rect, app: &App) {
         "  b 亮度   e/E 灯效   c 选色   S 应用静态色",
         Style::new().fg(DIM),
     )));
+    let y = inner.y + lines.len() as u16;
+    if let Some(line) = action_bar(
+        app,
+        inner,
+        y,
+        &[
+            (
+                "亮度",
+                MouseAction::Key(KeyCode::Char('b'), KeyModifiers::NONE),
+            ),
+            (
+                "上个",
+                MouseAction::Key(KeyCode::Char('E'), KeyModifiers::NONE),
+            ),
+            (
+                "下个",
+                MouseAction::Key(KeyCode::Char('e'), KeyModifiers::NONE),
+            ),
+            (
+                "应用色",
+                MouseAction::Key(KeyCode::Char('S'), KeyModifiers::NONE),
+            ),
+        ],
+    ) {
+        lines.push(line);
+    }
 
     frame.render_widget(
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
@@ -1777,6 +1880,29 @@ fn draw_ip_form(frame: &mut Frame, area: Rect, form: &IpForm) {
     );
 }
 
+fn action_bar(
+    app: &App,
+    inner: Rect,
+    y: u16,
+    items: &[(&str, MouseAction)],
+) -> Option<Line<'static>> {
+    if y >= inner.bottom() {
+        return None;
+    }
+    let mut x = inner.x;
+    let mut spans = Vec::new();
+    for (label, action) in items {
+        let width = UnicodeWidthStr::width(*label) as u16;
+        if x + width + 2 > inner.right() {
+            break;
+        }
+        record_mouse(app, Rect::new(x, y, width + 2, 1), *action);
+        spans.push(Span::styled(format!(" {label} "), Style::new().fg(ACCENT)));
+        x += width + 2;
+    }
+    Some(Line::from(spans))
+}
+
 fn record_mouse(app: &App, rect: Rect, action: MouseAction) {
     app.mouse_targets
         .borrow_mut()
@@ -1886,6 +2012,36 @@ fn draw_services(frame: &mut Frame, area: Rect, app: &App) {
         " e 启用自启   d 禁用自启   E 启用并启动   D 禁用并停止",
         Style::new().fg(DIM),
     )));
+    let y = inner.y + lines.len() as u16;
+    if let Some(line) = action_bar(
+        app,
+        inner,
+        y,
+        &[
+            (
+                "启动",
+                MouseAction::Key(KeyCode::Char('s'), KeyModifiers::NONE),
+            ),
+            (
+                "停止",
+                MouseAction::Key(KeyCode::Char('t'), KeyModifiers::NONE),
+            ),
+            (
+                "重启",
+                MouseAction::Key(KeyCode::Char('R'), KeyModifiers::NONE),
+            ),
+            (
+                "启用",
+                MouseAction::Key(KeyCode::Char('e'), KeyModifiers::NONE),
+            ),
+            (
+                "禁用",
+                MouseAction::Key(KeyCode::Char('d'), KeyModifiers::NONE),
+            ),
+        ],
+    ) {
+        lines.push(line);
+    }
 
     frame.render_widget(
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
@@ -2216,7 +2372,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal) {
+fn draw_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal) {
     let (v, h) = match modal {
         Modal::Message { .. } => ([8, 84, 8], [8, 84, 8]),
         _ => ([30, 40, 30], [18, 64, 18]),
@@ -2268,18 +2424,39 @@ fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal) {
 
     let parts = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(inner);
     frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), parts[0]);
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            if confirm {
-                " Enter 确认    Esc 取消"
-            } else {
-                " Enter 关闭"
-            },
-            Style::new().fg(DIM),
-        )))
-        .alignment(Alignment::Right),
-        parts[1],
-    );
+
+    let buttons: Vec<(&str, MouseAction)> = match modal {
+        Modal::Message { .. } => vec![("关闭", MouseAction::ModalConfirm)],
+        Modal::Input { .. } => vec![
+            ("确定", MouseAction::ModalConfirm),
+            ("取消", MouseAction::ModalCancel),
+        ],
+        Modal::Confirm { .. } => vec![
+            ("确认", MouseAction::ModalConfirm),
+            ("取消", MouseAction::ModalCancel),
+        ],
+    };
+
+    let mut spans = Vec::new();
+    let mut x = parts[1].x;
+    for (label, action) in &buttons {
+        let width = UnicodeWidthStr::width(*label) as u16;
+        record_mouse(app, Rect::new(x, parts[1].y, width + 2, 1), *action);
+        spans.push(Span::styled(
+            format!(" {label} "),
+            Style::new().fg(ACCENT).bold(),
+        ));
+        x += width + 2;
+    }
+    spans.push(Span::styled(
+        if confirm {
+            "   Enter 确认 / Esc 取消"
+        } else {
+            "   Enter 关闭"
+        },
+        Style::new().fg(DIM),
+    ));
+    frame.render_widget(Paragraph::new(Line::from(spans)), parts[1]);
 }
 
 fn panel(title: impl Into<Line<'static>>) -> Block<'static> {

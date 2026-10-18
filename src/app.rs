@@ -243,6 +243,14 @@ pub enum MouseAction {
     NetDns,
     NetCache,
     NetRefresh,
+    Key(KeyCode, KeyModifiers),
+    PerfSwitch,
+    PerfAc,
+    PerfBat,
+    PerfPowerApply,
+    PerfPresetApply,
+    ModalConfirm,
+    ModalCancel,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -628,6 +636,21 @@ impl App {
 
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
         if self.modal.is_some() {
+            if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+                let action = {
+                    let targets = self.mouse_targets.borrow();
+                    targets
+                        .iter()
+                        .rev()
+                        .find(|target| point_in(target.rect, mouse.column, mouse.row))
+                        .map(|target| target.action)
+                };
+                match action {
+                    Some(MouseAction::ModalConfirm) => self.modal_confirm()?,
+                    Some(MouseAction::ModalCancel) => self.modal = None,
+                    _ => {}
+                }
+            }
             return Ok(());
         }
 
@@ -783,6 +806,39 @@ impl App {
                 self.status = "正在刷新网络…".into();
                 self.status_err = false;
             }
+            MouseAction::Key(code, modifiers) => {
+                self.handle_key(KeyEvent::new(code, modifiers))?;
+            }
+            MouseAction::PerfSwitch => {
+                self.perf_focus = PerfFocus::Profiles;
+                self.handle_tab_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))?;
+            }
+            MouseAction::PerfAc => {
+                self.perf_focus = PerfFocus::Profiles;
+                self.handle_tab_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))?;
+            }
+            MouseAction::PerfBat => {
+                self.perf_focus = PerfFocus::Profiles;
+                self.handle_tab_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE))?;
+            }
+            MouseAction::PerfPowerApply => {
+                self.perf_focus = PerfFocus::Power;
+                self.handle_tab_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))?;
+            }
+            MouseAction::PerfPresetApply => {
+                self.perf_focus = PerfFocus::Power;
+                self.handle_tab_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE))?;
+            }
+            MouseAction::ModalConfirm | MouseAction::ModalCancel => {}
+        }
+        Ok(())
+    }
+
+    fn modal_confirm(&mut self) -> Result<()> {
+        match self.modal.take() {
+            Some(Modal::Confirm { pending, .. }) => self.apply_pending(pending)?,
+            Some(Modal::Input { value, action, .. }) => self.submit_input(action, value)?,
+            Some(Modal::Message { .. }) | None => {}
         }
         Ok(())
     }
@@ -809,10 +865,7 @@ impl App {
             KeyCode::Esc => {
                 self.modal = None;
             }
-            KeyCode::Enter => match self.modal.take() {
-                Some(Modal::Confirm { pending, .. }) => self.apply_pending(pending)?,
-                _ => self.modal = None,
-            },
+            KeyCode::Enter => self.modal_confirm()?,
             _ => {}
         }
         Ok(())
@@ -915,6 +968,8 @@ impl App {
                         self.profile_sel =
                             (self.profile_sel + Profile::ALL.len() - 1) % Profile::ALL.len();
                     }
+                    KeyCode::Home => self.profile_sel = 0,
+                    KeyCode::End => self.profile_sel = Profile::ALL.len() - 1,
                     KeyCode::Enter => {
                         let profile = Profile::ALL[self.profile_sel];
                         self.confirm(
@@ -953,6 +1008,8 @@ impl App {
                                 (self.power_sel + self.power.len() - 1) % self.power.len();
                         }
                     }
+                    KeyCode::Home => self.power_sel = 0,
+                    KeyCode::End => self.power_sel = self.power.len().saturating_sub(1),
                     KeyCode::Left | KeyCode::Char('h') => self.adjust_power(-1),
                     KeyCode::Right | KeyCode::Char('l') => self.adjust_power(1),
                     KeyCode::Char('H') => self.adjust_power(-5),
@@ -1028,6 +1085,14 @@ impl App {
                 self.limit_edit = (self.limit_edit + 5).min(100);
                 self.limit_dirty = true;
             }
+            KeyCode::Home => {
+                self.limit_edit = 20;
+                self.limit_dirty = true;
+            }
+            KeyCode::End => {
+                self.limit_edit = 100;
+                self.limit_dirty = true;
+            }
             KeyCode::Enter | KeyCode::Char('a') => {
                 self.confirm(
                     "设置充电上限",
@@ -1058,6 +1123,10 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') if len > 0 => {
                 self.fan_sel = (self.fan_sel + len - 1) % len;
             }
+            KeyCode::Home if len > 0 => self.fan_sel = 0,
+            KeyCode::End if len > 0 => self.fan_sel = len - 1,
+            KeyCode::PageUp if len > 0 => self.fan_sel = self.fan_sel.saturating_sub(5),
+            KeyCode::PageDown if len > 0 => self.fan_sel = (self.fan_sel + 5).min(len - 1),
             KeyCode::Char('p') if len > 0 => {
                 let preset = self.cfg.fan_presets[self.fan_sel].clone();
                 self.confirm(
@@ -1152,6 +1221,12 @@ impl App {
                         edit.sel = (edit.sel + edit.temp.len() - 1) % edit.temp.len();
                     }
                 }
+                KeyCode::Home => edit.sel = 0,
+                KeyCode::End => edit.sel = edit.temp.len().saturating_sub(1),
+                KeyCode::PageUp => edit.sel = edit.sel.saturating_sub(5),
+                KeyCode::PageDown => {
+                    edit.sel = (edit.sel + 5).min(edit.temp.len().saturating_sub(1));
+                }
                 KeyCode::Left | KeyCode::Char('h') => edit.adjust_pwm(-1),
                 KeyCode::Right | KeyCode::Char('l') => edit.adjust_pwm(1),
                 KeyCode::Char('H') => edit.adjust_pwm(-10),
@@ -1223,6 +1298,23 @@ impl App {
                     self.service_sel =
                         (self.service_sel + self.services.len() - 1) % self.services.len();
                 }
+                return Ok(());
+            }
+            KeyCode::Home => {
+                self.service_sel = 0;
+                return Ok(());
+            }
+            KeyCode::End => {
+                self.service_sel = self.services.len().saturating_sub(1);
+                return Ok(());
+            }
+            KeyCode::PageUp => {
+                self.service_sel = self.service_sel.saturating_sub(5);
+                return Ok(());
+            }
+            KeyCode::PageDown => {
+                self.service_sel =
+                    (self.service_sel + 5).min(self.services.len().saturating_sub(1));
                 return Ok(());
             }
             KeyCode::Char('s') => crate::services::ServiceAction::Start,
@@ -1443,6 +1535,24 @@ impl App {
             }
             KeyCode::Down | KeyCode::Char('j') => self.net_move(1),
             KeyCode::Up | KeyCode::Char('k') => self.net_move(-1),
+            KeyCode::Home => {
+                self.net_sel = 0;
+                self.refresh_net_detail();
+            }
+            KeyCode::End => {
+                self.net_sel = self.net_len().saturating_sub(1);
+                self.refresh_net_detail();
+            }
+            KeyCode::PageUp => {
+                for _ in 0..5 {
+                    self.net_move(-1);
+                }
+            }
+            KeyCode::PageDown => {
+                for _ in 0..5 {
+                    self.net_move(1);
+                }
+            }
             KeyCode::Char('u') => self.net_up()?,
             KeyCode::Char('d') => self.net_down()?,
             KeyCode::Char('x') => self.net_delete(),
@@ -2217,7 +2327,7 @@ fn help_text() -> String {
     [
         "全局",
         "  Tab / Shift+Tab  切换页面     1-8  直接跳转",
-        "  鼠标：点击左侧导航/列表行，滚轮上下选择",
+        "  鼠标：点击导航/列表/操作栏，双击执行，滚轮选择",
         "  r 刷新   ? 帮助   q 退出      Ctrl+C 立即退出",
         "",
         "性能",
