@@ -6,7 +6,7 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{AURA_COLORS, App, IpForm, Modal, MouseAction, MouseTarget, NetView, Tab};
 use crate::asus::{self, GpuMode, Profile};
@@ -3358,27 +3358,28 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+fn wrapped_line_count(text: &str, width: usize) -> usize {
+    if width == 0 {
+        return text.lines().count().max(1);
+    }
+    let mut lines = 0;
+    for line in text.split('\n') {
+        let mut used = 0;
+        let mut count = 1;
+        for ch in line.chars() {
+            let w = ch.width().unwrap_or(0);
+            if used + w > width && used > 0 {
+                count += 1;
+                used = 0;
+            }
+            used += w;
+        }
+        lines += count;
+    }
+    lines.max(1)
+}
+
 fn draw_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal) {
-    let (v, h) = match modal {
-        Modal::Message { .. } => ([8, 84, 8], [8, 84, 8]),
-        _ => ([30, 40, 30], [18, 64, 18]),
-    };
-    let vertical = Layout::vertical([
-        Constraint::Percentage(v[0]),
-        Constraint::Percentage(v[1]),
-        Constraint::Percentage(v[2]),
-    ])
-    .split(area);
-    let horizontal = Layout::horizontal([
-        Constraint::Percentage(h[0]),
-        Constraint::Percentage(h[1]),
-        Constraint::Percentage(h[2]),
-    ])
-    .split(vertical[1]);
-    let popup = horizontal[1];
-
-    frame.render_widget(Clear, popup);
-
     let (title, body, confirm): (String, String, bool) = match modal {
         Modal::Confirm { title, body, .. } => (title.clone(), body.clone(), true),
         Modal::Message { title, body } => (title.clone(), body.clone(), false),
@@ -3397,6 +3398,47 @@ fn draw_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal) {
             (title.clone(), format!("{prompt}\n\n  {shown}▏"), true)
         }
     };
+    let buttons: Vec<(&str, MouseAction)> = match modal {
+        Modal::Message { .. } => vec![("关闭", MouseAction::ModalConfirm)],
+        Modal::Input { .. } | Modal::Confirm { .. } => vec![
+            ("确认", MouseAction::ModalConfirm),
+            ("取消", MouseAction::ModalCancel),
+        ],
+    };
+    let hint = if confirm {
+        "   Enter 确认 / Esc 取消"
+    } else {
+        "   Enter 关闭"
+    };
+
+    let button_width = buttons
+        .iter()
+        .map(|(label, _)| UnicodeWidthStr::width(*label) + 3)
+        .sum::<usize>()
+        + UnicodeWidthStr::width(hint);
+    let title_width = UnicodeWidthStr::width(title.as_str()) + 2;
+    let body_width = body.lines().map(UnicodeWidthStr::width).max().unwrap_or(0);
+    let desired_width = body_width.max(button_width).max(title_width).max(32) + 4;
+    let max_width = area.width.saturating_sub(4).max(1) as usize;
+    let width = desired_width
+        .min(max_width)
+        .max(10)
+        .min(area.width.max(1) as usize) as u16;
+    let inner_width = width.saturating_sub(2).max(1) as usize;
+    let body_lines = wrapped_line_count(&body, inner_width) as u16;
+    let max_height = area.height.saturating_sub(2).max(1);
+    let height = (body_lines + 4)
+        .max(5)
+        .min(max_height)
+        .min(area.height.max(1));
+    let popup = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+
+    frame.render_widget(Clear, popup);
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -3410,18 +3452,6 @@ fn draw_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal) {
 
     let parts = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(inner);
     frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), parts[0]);
-
-    let buttons: Vec<(&str, MouseAction)> = match modal {
-        Modal::Message { .. } => vec![("关闭", MouseAction::ModalConfirm)],
-        Modal::Input { .. } => vec![
-            ("确定", MouseAction::ModalConfirm),
-            ("取消", MouseAction::ModalCancel),
-        ],
-        Modal::Confirm { .. } => vec![
-            ("确认", MouseAction::ModalConfirm),
-            ("取消", MouseAction::ModalCancel),
-        ],
-    };
 
     let mut spans = Vec::new();
     let mut x = parts[1].x;
@@ -3437,17 +3467,9 @@ fn draw_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal) {
         spans.push(Span::raw(" "));
         x += width + 3;
     }
-    spans.push(Span::styled(
-        if confirm {
-            "   Enter 确认 / Esc 取消"
-        } else {
-            "   Enter 关闭"
-        },
-        Style::new().fg(pal().dim),
-    ));
+    spans.push(Span::styled(hint, Style::new().fg(pal().dim)));
     frame.render_widget(Paragraph::new(Line::from(spans)), parts[1]);
 }
-
 fn panel(title: impl Into<Line<'static>>) -> Block<'static> {
     Block::bordered()
         .border_type(BorderType::Rounded)
