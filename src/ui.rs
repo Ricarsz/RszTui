@@ -409,9 +409,16 @@ fn draw_cpu(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(block, area);
     let compact = inner.width < 48;
     let cell_width = if compact { 7 } else { 9 };
-    let per_row = (inner.width as usize / cell_width).clamp(2, 8);
+    let compact_per_row = (inner.width as usize / cell_width).clamp(2, 8);
+    let max_core_rows = inner.height.saturating_sub(3).max(1) as usize;
+    let compact_rows = app.snap.cpu_cores.len().div_ceil(compact_per_row);
+    let (per_row, tiny) = if compact_rows <= max_core_rows {
+        (compact_per_row, false)
+    } else {
+        ((inner.width as usize / 3).clamp(2, 8), true)
+    };
     let wanted_rows = app.snap.cpu_cores.len().div_ceil(per_row).clamp(1, 6);
-    let core_rows = wanted_rows.min(inner.height.saturating_sub(3).max(1) as usize) as u16;
+    let core_rows = wanted_rows.min(max_core_rows) as u16;
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(2),
@@ -476,7 +483,9 @@ fn draw_cpu(frame: &mut Frame, area: Rect, app: &App) {
             let mut spans = Vec::new();
             for (offset, value) in chunk.iter().enumerate() {
                 let index = lines.len() * per_row + offset;
-                let label = if compact {
+                let label = if tiny {
+                    format!("{index:02} ")
+                } else if compact {
                     format!("C{index:02}{value:>3.0}% ")
                 } else {
                     let bar = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
