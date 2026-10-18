@@ -6,6 +6,7 @@
 ## 本地 PKGBUILD
 
 ```bash
+git clone https://github.com/Ricarsz/RszTui.git
 cd RszTui/packaging/aur
 paru -Bi
 ```
@@ -32,7 +33,7 @@ packaging/aur/rsztui-<版本>-1-x86_64.pkg.tar.zst
 安装：
 
 ```bash
-paru -U packaging/aur/rsztui-0.6.0-1-x86_64.pkg.tar.zst
+paru -U packaging/aur/rsztui-<版本>-1-x86_64.pkg.tar.zst
 # 或 sudo pacman -U ...
 ```
 

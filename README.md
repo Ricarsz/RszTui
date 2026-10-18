@@ -19,7 +19,9 @@ ASUS TUF 的终端控制台。Rust + [ratatui](https://ratatui.rs/)，底层调�
 ## 快速开始
 
 ```bash
-cd RszTui/packaging/aur && paru -Bi
+git clone https://github.com/Ricarsz/RszTui.git
+cd RszTui
+cd packaging/aur && paru -Bi
 sudo rsztui
 ```
 
