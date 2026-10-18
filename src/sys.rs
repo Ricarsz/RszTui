@@ -5,8 +5,11 @@ use std::time::Instant;
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub cpu_pct: f32,
+    pub cpu_cores: Vec<f32>,
     pub mem_used: u64,
     pub mem_total: u64,
+    pub mem_cached: u64,
+    pub mem_free: u64,
     pub rx_bps: f64,
     pub tx_bps: f64,
     pub temps: Vec<(String, f32)>,
@@ -19,6 +22,7 @@ pub struct Snapshot {
 #[derive(Default)]
 pub struct Collector {
     prev_cpu: Option<(u64, u64)>,
+    prev_cores: Vec<(u64, u64)>,
     prev_net: Option<(u64, u64)>,
     prev_time: Option<Instant>,
 }
@@ -28,7 +32,8 @@ impl Collector {
         let now = Instant::now();
         let mut snap = Snapshot::default();
 
-        if let Some((total, idle)) = cpu_times() {
+        let (overall, cores) = cpu_times_all();
+        if let Some((total, idle)) = overall {
             if let Some((prev_total, prev_idle)) = self.prev_cpu {
                 let d_total = total.saturating_sub(prev_total) as f64;
                 let d_idle = idle.saturating_sub(prev_idle) as f64;
@@ -38,10 +43,30 @@ impl Collector {
             }
             self.prev_cpu = Some((total, idle));
         }
+        if self.prev_cores.len() == cores.len() {
+            snap.cpu_cores = cores
+                .iter()
+                .zip(self.prev_cores.iter())
+                .map(|((total, idle), (prev_total, prev_idle))| {
+                    let d_total = total.saturating_sub(*prev_total) as f64;
+                    let d_idle = idle.saturating_sub(*prev_idle) as f64;
+                    if d_total > 0.0 {
+                        ((1.0 - d_idle / d_total) * 100.0).clamp(0.0, 100.0) as f32
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+        } else {
+            snap.cpu_cores = vec![0.0; cores.len()];
+        }
+        self.prev_cores = cores;
 
-        if let Some((used, total)) = mem_info() {
-            snap.mem_used = used;
-            snap.mem_total = total;
+        if let Some(mem) = mem_info() {
+            snap.mem_used = mem.used;
+            snap.mem_total = mem.total;
+            snap.mem_cached = mem.cached;
+            snap.mem_free = mem.free;
         }
 
         if let Some((rx, tx)) = net_bytes() {
@@ -81,12 +106,31 @@ impl Collector {
     }
 }
 
-fn cpu_times() -> Option<(u64, u64)> {
-    let text = fs::read_to_string("/proc/stat").ok()?;
-    let line = text.lines().find(|l| l.starts_with("cpu "))?;
+type CpuTime = (u64, u64);
+
+fn cpu_times_all() -> (Option<CpuTime>, Vec<CpuTime>) {
+    let Ok(text) = fs::read_to_string("/proc/stat") else {
+        return (None, Vec::new());
+    };
+    let mut overall = None;
+    let mut cores = Vec::new();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("cpu ") {
+            overall = parse_cpu_line(rest);
+        } else if let Some(rest) = line.strip_prefix("cpu")
+            && rest.chars().next().is_some_and(|c| c.is_ascii_digit())
+            && let Some(value) =
+                parse_cpu_line(rest.trim_start_matches(|c: char| c.is_ascii_digit()))
+        {
+            cores.push(value);
+        }
+    }
+    (overall, cores)
+}
+
+fn parse_cpu_line(line: &str) -> Option<(u64, u64)> {
     let fields: Vec<u64> = line
         .split_whitespace()
-        .skip(1)
         .filter_map(|v| v.parse().ok())
         .collect();
     if fields.len() < 4 {
@@ -97,20 +141,35 @@ fn cpu_times() -> Option<(u64, u64)> {
     Some((total, idle))
 }
 
-fn mem_info() -> Option<(u64, u64)> {
+struct MemInfo {
+    used: u64,
+    total: u64,
+    cached: u64,
+    free: u64,
+}
+
+fn mem_info() -> Option<MemInfo> {
     let text = fs::read_to_string("/proc/meminfo").ok()?;
-    let mut total = None;
-    let mut available = None;
-    for line in text.lines() {
-        if let Some(v) = line.strip_prefix("MemTotal:") {
-            total = v.split_whitespace().next()?.parse::<u64>().ok();
-        } else if let Some(v) = line.strip_prefix("MemAvailable:") {
-            available = v.split_whitespace().next()?.parse::<u64>().ok();
-        }
-    }
-    let total = total? * 1024;
-    let available = available? * 1024;
-    Some((total.saturating_sub(available), total))
+    let value = |key: &str| {
+        text.lines().find_map(|line| {
+            line.strip_prefix(key)
+                .and_then(|v| v.split_whitespace().next())
+                .and_then(|v| v.parse::<u64>().ok())
+        })
+    };
+    let total = value("MemTotal:")? * 1024;
+    let available = value("MemAvailable:")? * 1024;
+    let cached = value("Cached:").unwrap_or(0) * 1024
+        + value("SReclaimable:").unwrap_or(0) * 1024
+        + value("Buffers:").unwrap_or(0) * 1024;
+    let used = total.saturating_sub(available);
+    let free = total.saturating_sub(used + cached);
+    Some(MemInfo {
+        used,
+        total,
+        cached,
+        free,
+    })
 }
 
 fn net_bytes() -> Option<(u64, u64)> {

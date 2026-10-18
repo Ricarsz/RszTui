@@ -3,7 +3,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Clear, Gauge, Paragraph, Sparkline, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, Gauge, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AURA_COLORS, App, IpForm, Modal, MouseAction, MouseTarget, NetView, Tab};
@@ -279,6 +279,72 @@ fn draw_body(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
+fn draw_graph_inner(
+    frame: &mut Frame,
+    area: Rect,
+    data: &std::collections::VecDeque<u64>,
+    max: u64,
+    color: Color,
+) {
+    use ratatui::widgets::canvas::{Canvas, Line as CanvasLine};
+
+    if data.is_empty() || area.width == 0 || area.height == 0 {
+        return;
+    }
+    let max = max.max(1) as f64;
+    let last = (data.len().saturating_sub(1)).max(1) as f64;
+    let grid = Color::Rgb(46, 54, 66);
+    let fill = Color::Rgb(26, 42, 50);
+    let points: Vec<(f64, f64)> = data
+        .iter()
+        .enumerate()
+        .map(|(i, value)| (i as f64, (*value).min(max as u64) as f64))
+        .collect();
+
+    let canvas = Canvas::default()
+        .x_bounds([0.0, last])
+        .y_bounds([0.0, max])
+        .paint(|ctx| {
+            for y in [0.25, 0.5, 0.75] {
+                ctx.draw(&CanvasLine {
+                    x1: 0.0,
+                    y1: max * y,
+                    x2: last,
+                    y2: max * y,
+                    color: grid,
+                });
+            }
+            for (x, y) in &points {
+                ctx.draw(&CanvasLine {
+                    x1: *x,
+                    y1: 0.0,
+                    x2: *x,
+                    y2: *y,
+                    color: fill,
+                });
+            }
+            for pair in points.windows(2) {
+                ctx.draw(&CanvasLine {
+                    x1: pair[0].0,
+                    y1: pair[0].1,
+                    x2: pair[1].0,
+                    y2: pair[1].1,
+                    color,
+                });
+            }
+            if let Some((x, y)) = points.last() {
+                ctx.draw(&CanvasLine {
+                    x1: *x,
+                    y1: 0.0,
+                    x2: *x,
+                    y2: *y,
+                    color,
+                });
+            }
+        });
+    frame.render_widget(canvas, area);
+}
+
 fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     let rows = Layout::vertical([
         Constraint::Ratio(1, 3),
@@ -306,56 +372,142 @@ fn draw_cpu(frame: &mut Frame, area: Rect, app: &App) {
     let block = panel(" CPU ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    let per_row = (inner.width as usize / 9).clamp(1, 8);
+    let core_rows = app.snap.cpu_cores.len().div_ceil(per_row).clamp(1, 4) as u16;
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(2),
+        Constraint::Length(core_rows),
+    ])
+    .split(inner);
 
-    let parts = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
-    let line = Line::from(vec![
-        Span::styled(
-            format!(" {:.1}%", app.snap.cpu_pct),
-            Style::new().fg(GOOD).bold(),
-        ),
-        Span::styled(
-            format!("  负载 {:.2}", app.snap.load1),
-            Style::new().fg(DIM),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(line), parts[0]);
+    let cpu_temp = app
+        .snap
+        .temps
+        .iter()
+        .find(|(label, _)| label.to_ascii_lowercase().contains("tctl"))
+        .map(|(_, value)| *value)
+        .or(app.snap.max_temp);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(" {:.1}%", app.snap.cpu_pct),
+                Style::new().fg(GOOD).bold(),
+            ),
+            Span::styled(
+                format!("  负载 {:.2}", app.snap.load1),
+                Style::new().fg(DIM),
+            ),
+            Span::styled(
+                format!(
+                    "  Tctl {}",
+                    cpu_temp
+                        .map(|v| format!("{v:.1}°C"))
+                        .unwrap_or_else(|| "-".into())
+                ),
+                Style::new().fg(DIM),
+            ),
+        ])),
+        rows[0],
+    );
 
-    let data: Vec<u64> = app.cpu_hist.iter().copied().collect();
-    let spark = Sparkline::default()
-        .data(&data)
-        .max(100)
-        .style(Style::new().fg(GOOD));
-    frame.render_widget(spark, parts[1]);
+    let max = app.cpu_hist.iter().copied().max().unwrap_or(0).max(10);
+    draw_graph_inner(frame, rows[1], &app.cpu_hist, max, Color::Rgb(90, 200, 220));
+
+    if app.snap.cpu_cores.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " 等待核心采样…",
+                Style::new().fg(DIM),
+            ))),
+            rows[2],
+        );
+    } else {
+        let mut lines = Vec::new();
+        for chunk in app.snap.cpu_cores.chunks(per_row) {
+            let mut spans = Vec::new();
+            for (offset, value) in chunk.iter().enumerate() {
+                let index = lines.len() * per_row + offset;
+                let bar = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+                    [((*value / 100.0 * 7.0).round() as usize).min(7)];
+                spans.push(Span::styled(
+                    format!("C{index:<2}{bar}{value:>3.0}% "),
+                    Style::new().fg(load_color(*value)),
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+        frame.render_widget(Paragraph::new(Text::from(lines)), rows[2]);
+    }
 }
 
 fn draw_memory(frame: &mut Frame, area: Rect, app: &App) {
     let block = panel(" 内存 ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .split(inner);
 
-    let ratio = if app.snap.mem_total > 0 {
-        app.snap.mem_used as f64 / app.snap.mem_total as f64
-    } else {
-        0.0
-    };
-    let label = format!(
-        "{} / {}",
-        util::human_bytes(app.snap.mem_used as f64),
-        util::human_bytes(app.snap.mem_total as f64)
+    let total = app.snap.mem_total.max(1);
+    let used = app.snap.mem_used.min(total);
+    let cached = app.snap.mem_cached.min(total.saturating_sub(used));
+    let free = total.saturating_sub(used + cached);
+    let cells = inner.width as usize;
+    let used_cells = ((used as f64 / total as f64) * cells as f64).round() as usize;
+    let cached_cells = ((cached as f64 / total as f64) * cells as f64).round() as usize;
+    let used_cells = used_cells.min(cells);
+    let cached_cells = cached_cells.min(cells.saturating_sub(used_cells));
+    let free_cells = cells.saturating_sub(used_cells + cached_cells);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "█".repeat(used_cells),
+                Style::new().fg(Color::Rgb(130, 150, 240)),
+            ),
+            Span::styled(
+                "█".repeat(cached_cells),
+                Style::new().fg(Color::Rgb(80, 130, 150)),
+            ),
+            Span::styled(
+                "░".repeat(free_cells),
+                Style::new().fg(Color::Rgb(50, 58, 70)),
+            ),
+        ])),
+        rows[0],
     );
-    let gauge = Gauge::default()
-        .gauge_style(Style::new().fg(Color::Rgb(140, 160, 255)))
-        .ratio(ratio.clamp(0.0, 1.0))
-        .label(label);
-    let parts = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(inner);
-    frame.render_widget(gauge, parts[0]);
-
-    let data: Vec<u64> = app.mem_hist.iter().copied().collect();
-    let spark = Sparkline::default()
-        .data(&data)
-        .max(100)
-        .style(Style::new().fg(Color::Rgb(140, 160, 255)));
-    frame.render_widget(spark, parts[1]);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(
+                    " 已用 {} / {}",
+                    util::human_bytes(used as f64),
+                    util::human_bytes(total as f64)
+                ),
+                Style::new().fg(Color::Gray),
+            ),
+            Span::styled(
+                format!("   缓存 {}", util::human_bytes(cached as f64)),
+                Style::new().fg(DIM),
+            ),
+            Span::styled(
+                format!("   空闲 {}", util::human_bytes(free as f64)),
+                Style::new().fg(DIM),
+            ),
+        ])),
+        rows[1],
+    );
+    draw_graph_inner(
+        frame,
+        rows[2],
+        &app.mem_hist,
+        100,
+        Color::Rgb(130, 150, 240),
+    );
 }
 
 fn draw_network_graph(frame: &mut Frame, area: Rect, app: &App) {
@@ -365,9 +517,9 @@ fn draw_network_graph(frame: &mut Frame, area: Rect, app: &App) {
 
     let parts = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Min(1),
+        Constraint::Min(2),
         Constraint::Length(1),
-        Constraint::Min(1),
+        Constraint::Min(2),
     ])
     .split(inner);
 
@@ -386,13 +538,8 @@ fn draw_network_graph(frame: &mut Frame, area: Rect, app: &App) {
     ]);
     frame.render_widget(Paragraph::new(header), parts[0]);
 
-    let rx: Vec<u64> = app.rx_hist.iter().copied().collect();
-    frame.render_widget(
-        Sparkline::default()
-            .data(&rx)
-            .style(Style::new().fg(ACCENT)),
-        parts[1],
-    );
+    let rx_max = app.rx_hist.iter().copied().max().unwrap_or(0).max(1);
+    draw_graph_inner(frame, parts[1], &app.rx_hist, rx_max, ACCENT);
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -401,11 +548,8 @@ fn draw_network_graph(frame: &mut Frame, area: Rect, app: &App) {
         ))),
         parts[2],
     );
-    let tx: Vec<u64> = app.tx_hist.iter().copied().collect();
-    frame.render_widget(
-        Sparkline::default().data(&tx).style(Style::new().fg(WARN)),
-        parts[3],
-    );
+    let tx_max = app.tx_hist.iter().copied().max().unwrap_or(0).max(1);
+    draw_graph_inner(frame, parts[3], &app.tx_hist, tx_max, WARN);
 }
 
 fn draw_temps(frame: &mut Frame, area: Rect, app: &App) {
@@ -427,13 +571,17 @@ fn draw_temps(frame: &mut Frame, area: Rect, app: &App) {
         .iter()
         .take(inner.height as usize)
         .map(|(label, value)| {
+            let ratio = ((*value - 30.0) / 70.0).clamp(0.0, 1.0);
+            let filled = (ratio * 8.0).round() as usize;
+            let bar = format!("{}{}", "█".repeat(filled), "░".repeat(8 - filled));
             Line::from(vec![
                 Span::styled(
-                    format!("  {:<28}", util::truncate(label, 28)),
+                    format!("  {:<26}", util::truncate(label, 26)),
                     Style::new().fg(Color::Gray),
                 ),
+                Span::styled(bar, Style::new().fg(temp_color(*value))),
                 Span::styled(
-                    format!("{value:>5.1}°C"),
+                    format!(" {value:>5.1}°C"),
                     Style::new().fg(temp_color(*value)).bold(),
                 ),
             ])
@@ -446,30 +594,55 @@ fn draw_battery_panel(frame: &mut Frame, area: Rect, app: &App) {
     let block = panel(" 电池 ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
-
-    let parts = Layout::vertical([
-        Constraint::Length(3),
+    let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
     ])
     .split(inner);
 
     let capacity = app.battery.capacity.unwrap_or(0);
-    let gauge = Gauge::default()
-        .gauge_style(Style::new().fg(battery_color(app)))
-        .ratio(capacity as f64 / 100.0)
-        .label(format!(
-            "{}%  {}  {}",
-            capacity,
-            app.battery.status_zh(),
-            match app.battery.ac_online {
-                Some(true) => "AC",
-                Some(false) => "电池",
-                None => "",
-            }
-        ));
-    frame.render_widget(gauge, parts[0]);
+    let cells = inner.width.saturating_sub(6) as usize;
+    let filled = ((capacity as f64 / 100.0) * cells as f64).round() as usize;
+    let bar = format!(
+        "{}{}",
+        "█".repeat(filled.min(cells)),
+        "░".repeat(cells.saturating_sub(filled))
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(bar, Style::new().fg(battery_color(app))),
+            Span::styled(
+                format!("  {capacity}%"),
+                Style::new().fg(battery_color(app)).bold(),
+            ),
+        ])),
+        rows[0],
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("  {}", app.battery.status_zh()),
+                Style::new().fg(if app.battery.ac_online == Some(true) {
+                    GOOD
+                } else {
+                    WARN
+                }),
+            ),
+            Span::styled(
+                match app.battery.ac_online {
+                    Some(true) => "   已接电源",
+                    Some(false) => "   电池供电",
+                    None => "",
+                },
+                Style::new().fg(DIM),
+            ),
+        ])),
+        rows[1],
+    );
 
     let power = app
         .battery
@@ -486,7 +659,6 @@ fn draw_battery_panel(frame: &mut Frame, area: Rect, app: &App) {
         .limit
         .map(|v| format!("{v}%"))
         .unwrap_or_else(|| "-".into());
-
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("  功率 ", Style::new().fg(DIM)),
@@ -496,7 +668,7 @@ fn draw_battery_panel(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("   上限 ", Style::new().fg(DIM)),
             Span::styled(limit, Style::new().fg(Color::Gray)),
         ])),
-        parts[1],
+        rows[2],
     );
 
     if let (Some(full), Some(design)) = (
@@ -510,19 +682,25 @@ fn draw_battery_panel(frame: &mut Frame, area: Rect, app: &App) {
                     format!("{full:.1} / {design:.1} Wh"),
                     Style::new().fg(Color::Gray),
                 ),
+                Span::styled(
+                    format!(
+                        "   循环 {} 次",
+                        app.battery
+                            .cycle_count
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "-".into())
+                    ),
+                    Style::new().fg(DIM),
+                ),
             ])),
-            parts[2],
+            rows[3],
         );
     }
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!(
-                "  循环 {} 次   电压 {}",
-                app.battery
-                    .cycle_count
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "-".into()),
+                "  电压 {}",
                 app.battery
                     .voltage_v
                     .map(|v| format!("{v:.2} V"))
@@ -530,7 +708,7 @@ fn draw_battery_panel(frame: &mut Frame, area: Rect, app: &App) {
             ),
             Style::new().fg(DIM),
         ))),
-        parts[3],
+        rows[4],
     );
 }
 
@@ -2667,6 +2845,16 @@ fn battery_color(app: &App) -> Color {
         Some(v) if v <= 15 => BAD,
         Some(v) if v <= 35 => WARN,
         _ => GOOD,
+    }
+}
+
+fn load_color(value: f32) -> Color {
+    if value >= 85.0 {
+        BAD
+    } else if value >= 55.0 {
+        WARN
+    } else {
+        GOOD
     }
 }
 
