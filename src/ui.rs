@@ -800,57 +800,219 @@ fn draw_battery(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_fan(frame: &mut Frame, area: Rect, app: &App) {
+    let rows =
+        Layout::vertical([Constraint::Percentage(56), Constraint::Percentage(44)]).split(area);
+    draw_fan_graph(frame, rows[0], app);
+
     let cols =
-        Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).split(area);
-    draw_fan_curves(frame, cols[0], app);
+        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).split(rows[1]);
+    if let Some(edit) = &app.fan_edit {
+        draw_fan_editor(frame, cols[0], edit);
+    } else {
+        draw_fan_detail(frame, cols[0], app);
+    }
     draw_fan_presets(frame, cols[1], app);
 }
 
-fn draw_fan_curves(frame: &mut Frame, area: Rect, app: &App) {
-    let block = panel(" 当前风扇曲线 ");
+fn draw_fan_graph(frame: &mut Frame, area: Rect, app: &App) {
+    use ratatui::widgets::canvas::{Canvas, Line as CanvasLine, Points};
+
+    let cpu_color = Color::Rgb(90, 210, 230);
+    let gpu_color = Color::Rgb(220, 130, 240);
+    let grid = Color::Rgb(55, 62, 72);
+
+    type FanPlot = (String, Vec<(u8, u8)>, Color, bool);
+    let curves: Vec<FanPlot> = ["cpu", "gpu"]
+        .iter()
+        .filter_map(|fan| {
+            let editing = app
+                .fan_edit
+                .as_ref()
+                .is_some_and(|e| e.fan.eq_ignore_ascii_case(fan));
+            let points: Vec<(u8, u8)> = if editing {
+                let edit = app.fan_edit.as_ref()?;
+                edit.temp
+                    .iter()
+                    .copied()
+                    .zip(edit.pwm.iter().copied())
+                    .collect()
+            } else {
+                let curve = app
+                    .fan_curves
+                    .iter()
+                    .find(|c| c.fan.eq_ignore_ascii_case(fan))?;
+                curve
+                    .temp
+                    .iter()
+                    .copied()
+                    .zip(curve.pwm.iter().copied())
+                    .collect()
+            };
+            let color = if *fan == "cpu" { cpu_color } else { gpu_color };
+            Some((fan.to_uppercase(), points, color, editing))
+        })
+        .collect();
+
+    let title = Line::from(vec![
+        Span::styled(" 风扇曲线 ", Style::new().fg(ACCENT).bold()),
+        Span::styled("CPU ", Style::new().fg(cpu_color)),
+        Span::styled("GPU ", Style::new().fg(gpu_color)),
+        Span::styled(" 横轴温度 / 纵轴 PWM", Style::new().fg(DIM)),
+    ]);
+
+    let canvas = Canvas::default()
+        .block(panel(title))
+        .x_bounds([20.0, 100.0])
+        .y_bounds([0.0, 255.0])
+        .paint(|ctx| {
+            for y in [0.0, 64.0, 128.0, 192.0, 255.0] {
+                ctx.draw(&CanvasLine {
+                    x1: 20.0,
+                    y1: y,
+                    x2: 100.0,
+                    y2: y,
+                    color: grid,
+                });
+            }
+            for x in [20.0, 40.0, 60.0, 80.0, 100.0] {
+                ctx.draw(&CanvasLine {
+                    x1: x,
+                    y1: 0.0,
+                    x2: x,
+                    y2: 255.0,
+                    color: grid,
+                });
+            }
+            ctx.print(21.5, 238.0, "255");
+            ctx.print(21.5, 4.0, "0");
+            ctx.print(95.0, 4.0, "°C");
+
+            for (_name, points, color, editing) in &curves {
+                let coords: Vec<(f64, f64)> = points
+                    .iter()
+                    .map(|(temp, pwm)| (*temp as f64, *pwm as f64))
+                    .collect();
+                for pair in coords.windows(2) {
+                    ctx.draw(&CanvasLine {
+                        x1: pair[0].0,
+                        y1: pair[0].1,
+                        x2: pair[1].0,
+                        y2: pair[1].1,
+                        color: *color,
+                    });
+                }
+                ctx.draw(&Points {
+                    coords: &coords,
+                    color: if *editing { Color::White } else { *color },
+                });
+            }
+        });
+
+    frame.render_widget(canvas, area);
+}
+
+fn draw_fan_detail(frame: &mut Frame, area: Rect, app: &App) {
+    let block = panel(" 曲线明细 ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let mut lines = Vec::new();
     for curve in &app.fan_curves {
-        let state = if curve.enabled {
-            Span::styled("启用", Style::new().fg(GOOD))
+        let color = if curve.fan.eq_ignore_ascii_case("cpu") {
+            Color::Rgb(90, 210, 230)
         } else {
-            Span::styled("停用", Style::new().fg(BAD))
+            Color::Rgb(220, 130, 240)
         };
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {:<4} ", curve.fan),
-                Style::new().fg(ACCENT).bold(),
+                Style::new().fg(color).bold(),
             ),
-            state,
+            Span::styled(
+                if curve.enabled { "启用" } else { "停用" },
+                Style::new().fg(if curve.enabled { GOOD } else { BAD }),
+            ),
         ]));
-
         let points: Vec<String> = curve
             .temp
             .iter()
             .zip(curve.pwm.iter())
-            .map(|(temp, pwm)| format!("{temp}°C:{}%", (*pwm as u32 * 100 / 255)))
+            .map(|(temp, pwm)| format!("{temp}°C {pwm}/{}%", (*pwm as u32 * 100 / 255)))
             .collect();
-        lines.push(Line::from(Span::styled(
-            format!("    {}", points.join("  ")),
-            Style::new().fg(Color::Gray),
-        )));
+        for chunk in points.chunks(4) {
+            lines.push(Line::from(Span::styled(
+                format!("    {}", chunk.join("   ")),
+                Style::new().fg(Color::Gray),
+            )));
+        }
         lines.push(Line::raw(""));
     }
 
     lines.push(Line::from(Span::styled(
-        " e 启用/停用   d 恢复固件默认   s 保存当前为预设",
+        " i 编辑 CPU   I 编辑 GPU   e 启用/停用",
         Style::new().fg(DIM),
     )));
     lines.push(Line::from(Span::styled(
-        " 曲线按性能模式保存，切换模式会套用对应曲线",
+        " d 恢复固件默认   s 保存当前为预设",
         Style::new().fg(DIM),
     )));
 
     frame.render_widget(
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
         inner,
+    );
+}
+
+fn draw_fan_editor(frame: &mut Frame, area: Rect, edit: &crate::app::FanEdit) {
+    let title = format!(
+        " 编辑 {} 曲线{} ",
+        edit.fan.to_uppercase(),
+        if edit.dirty { " *" } else { "" }
+    );
+    let block = panel(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(inner);
+    let mut lines = Vec::new();
+    for index in 0..edit.temp.len() {
+        let selected = index == edit.sel;
+        let style = if selected {
+            Style::new()
+                .bg(Color::Rgb(45, 52, 62))
+                .fg(Color::White)
+                .bold()
+        } else {
+            Style::new().fg(Color::Gray)
+        };
+        let marker = if selected { "▶" } else { " " };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {marker} 点{}  ", index + 1), style),
+            Span::styled(format!("{:>3}°C", edit.temp[index]), style),
+            Span::styled(format!("  PWM {:>3}", edit.pwm[index]), style),
+            Span::styled(
+                format!("  {:>3}%", edit.percent(index)),
+                style.fg(if selected { ACCENT } else { DIM }),
+            ),
+        ]));
+    }
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![
+            Line::from(Span::styled(
+                " j/k 选点   h/l PWM ±1   H/L ±10   [ ] 温度 ±1",
+                Style::new().fg(DIM),
+            )),
+            Line::from(Span::styled(
+                " c 切 CPU/GPU   a 写入   Esc 取消",
+                Style::new().fg(DIM),
+            )),
+        ])),
+        rows[1],
     );
 }
 
@@ -867,7 +1029,7 @@ fn draw_fan_presets(frame: &mut Frame, area: Rect, app: &App) {
         )));
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
-            "  按 s 把当前曲线保存为预设",
+            "  按 s 把当前已写入的曲线保存为预设",
             Style::new().fg(DIM),
         )));
     } else {
@@ -1448,7 +1610,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Tab::Dashboard => " Tab 切换  r 刷新  ? 帮助  q 退出",
         Tab::Performance => " f 焦点  j/k 选择  Enter 应用  a/b 设默认  g/G GPU  ? 帮助",
         Tab::Battery => " h/l 上限  Enter 应用  o 单次充满  ? 帮助",
-        Tab::Fan => " j/k 预设  p 应用  s 保存  d 默认  e 启用/停用  ? 帮助",
+        Tab::Fan => " i/I 编辑曲线  j/k 预设  p 应用  s 保存  e 启用  ? 帮助",
         Tab::Lighting => " b 亮度  e/E 灯效  c 颜色  S 静态色  ? 帮助",
         Tab::Network => " v 视图  j/k 选择  Enter 连接/编辑  u/d 启停  x 删除  o 无线  t 热点",
         _ => " Tab 切换  1-7 跳转  r 刷新  ? 帮助  q 退出",

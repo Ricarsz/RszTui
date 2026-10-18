@@ -580,6 +580,32 @@ pub fn fan_apply(profile: Profile, cpu: &str, gpu: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn fan_set_curve(profile: Profile, fan: &str, data: &str) -> Result<()> {
+    util::run(
+        "asusctl",
+        &[
+            "fan-curve",
+            "--mod-profile",
+            profile.asus(),
+            "--fan",
+            fan,
+            "--data",
+            data,
+        ],
+    )?;
+    util::run(
+        "asusctl",
+        &[
+            "fan-curve",
+            "--mod-profile",
+            profile.asus(),
+            "--enable-fan-curves",
+            "true",
+        ],
+    )?;
+    Ok(())
+}
+
 pub fn fan_default(profile: Profile) -> Result<()> {
     profile_set(profile)?;
     util::run("asusctl", &["fan-curve", "--default"])?;

@@ -2,7 +2,11 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
+use crossterm::execute;
 use ratatui::DefaultTerminal;
 
 use crate::asus::{self, BatteryInfo, GpuMode, PowerField, PowerSource, Profile, ProfileState};
@@ -134,6 +138,73 @@ impl IpForm {
 }
 
 #[derive(Debug, Clone)]
+pub struct FanEdit {
+    pub fan: String,
+    pub temp: Vec<u8>,
+    pub pwm: Vec<u8>,
+    pub sel: usize,
+    pub dirty: bool,
+}
+
+impl FanEdit {
+    pub fn from_curve(curve: &asus::FanCurve, fan: &str) -> Option<Self> {
+        if curve.temp.len() != curve.pwm.len() || curve.temp.is_empty() {
+            return None;
+        }
+        Some(Self {
+            fan: fan.to_string(),
+            temp: curve.temp.clone(),
+            pwm: curve.pwm.clone(),
+            sel: 0,
+            dirty: false,
+        })
+    }
+
+    pub fn data(&self) -> String {
+        self.temp
+            .iter()
+            .zip(self.pwm.iter())
+            .map(|(temp, pwm)| format!("{temp}c:{pwm}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    pub fn percent(&self, index: usize) -> u32 {
+        self.pwm
+            .get(index)
+            .map(|pwm| ((*pwm as f32 / 255.0) * 100.0).round() as u32)
+            .unwrap_or(0)
+    }
+
+    pub fn adjust_pwm(&mut self, delta: i32) {
+        if let Some(value) = self.pwm.get_mut(self.sel) {
+            *value = (*value as i32 + delta).clamp(0, 255) as u8;
+            self.dirty = true;
+        }
+    }
+
+    pub fn adjust_temp(&mut self, delta: i32) {
+        if self.sel >= self.temp.len() {
+            return;
+        }
+        let lower = if self.sel == 0 {
+            20
+        } else {
+            self.temp[self.sel - 1] as i32 + 1
+        };
+        let upper = if self.sel + 1 >= self.temp.len() {
+            100
+        } else {
+            self.temp[self.sel + 1] as i32 - 1
+        };
+        let current = self.temp[self.sel] as i32;
+        let upper = upper.max(lower);
+        self.temp[self.sel] = (current + delta).clamp(lower, upper) as u8;
+        self.dirty = true;
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum InputAction {
     Wifi { ssid: String, key_mgmt: String },
     Hotspot,
@@ -157,6 +228,8 @@ pub enum Pending {
     FanDelete(usize),
     FanDefault,
     FanToggle(bool),
+    FanCurveApply(FanEdit),
+    FanEditClose,
     HotspotOff,
     Quit,
 }
@@ -198,6 +271,7 @@ pub struct App {
     pub fan_curves: Vec<asus::FanCurve>,
     pub fan_enabled: String,
     pub fan_sel: usize,
+    pub fan_edit: Option<FanEdit>,
     pub led: String,
     pub aura_color: usize,
     pub tuning: bool,
@@ -230,7 +304,16 @@ pub struct App {
 pub fn run(cfg: Config) -> Result<()> {
     let mut app = App::new(cfg);
     let mut terminal = ratatui::init();
+    // 启用 Kitty 键盘协议，让终端把数字小键盘标记为 KEYPAD（配合 NumLock）。
+    let _ = execute!(
+        std::io::stdout(),
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+        )
+    );
     let result = app.event_loop(&mut terminal);
+    let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     ratatui::restore();
     result
 }
@@ -255,6 +338,7 @@ impl App {
             fan_curves: Vec::new(),
             fan_enabled: String::new(),
             fan_sel: 0,
+            fan_edit: None,
             led: "未知".into(),
             aura_color: 0,
             tuning: false,
@@ -333,7 +417,9 @@ impl App {
         Ok(())
     }
 
-    fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
+    fn handle_key(&mut self, mut key: KeyEvent) -> Result<()> {
+        key = self.translate_keypad(key);
+
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.quit = true;
             return Ok(());
@@ -372,6 +458,33 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// 数字小键盘：NumLock 关闭时终端本来就发方向键；
+    /// NumLock 开启时依靠 Kitty 协议的 KEYPAD 标记，把 8/2/4/6/5 映射成方向/确认。
+    /// 文本输入（IP 表单、密码）不映射，保证能输入数字。
+    fn translate_keypad(&self, key: KeyEvent) -> KeyEvent {
+        if !key.state.contains(KeyEventState::KEYPAD) {
+            return key;
+        }
+        let editing = matches!(self.modal, Some(Modal::Input { .. })) || self.ip_form.is_some();
+        if editing {
+            return key;
+        }
+        let code = match key.code {
+            KeyCode::Char('8') => KeyCode::Up,
+            KeyCode::Char('2') => KeyCode::Down,
+            KeyCode::Char('4') => KeyCode::Left,
+            KeyCode::Char('6') => KeyCode::Right,
+            KeyCode::Char('5') => KeyCode::Enter,
+            _ => return key,
+        };
+        KeyEvent {
+            code,
+            modifiers: key.modifiers,
+            kind: key.kind,
+            state: key.state,
+        }
     }
 
     fn handle_modal_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -603,8 +716,14 @@ impl App {
     }
 
     fn handle_fan_key(&mut self, key: KeyEvent) -> Result<()> {
+        if self.fan_edit.is_some() {
+            return self.handle_fan_edit_key(key);
+        }
+
         let len = self.cfg.fan_presets.len();
         match key.code {
+            KeyCode::Char('i') => self.open_fan_edit("cpu")?,
+            KeyCode::Char('I') => self.open_fan_edit("gpu")?,
             KeyCode::Down | KeyCode::Char('j') if len > 0 => {
                 self.fan_sel = (self.fan_sel + 1) % len;
             }
@@ -660,6 +779,102 @@ impl App {
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    fn open_fan_edit(&mut self, fan: &str) -> Result<()> {
+        if self.fan_curves.is_empty() {
+            let profile = self.profile.map(|p| p.active).unwrap_or(Profile::Balanced);
+            self.fan_curves = asus::fan_curves(profile)?;
+        }
+        let Some(curve) = self
+            .fan_curves
+            .iter()
+            .find(|c| c.fan.eq_ignore_ascii_case(fan))
+        else {
+            bail!("没有找到 {fan} 风扇曲线");
+        };
+        let Some(edit) = FanEdit::from_curve(curve, fan) else {
+            bail!("{fan} 曲线数据不完整");
+        };
+        self.fan_edit = Some(edit);
+        self.status = format!(
+            "编辑 {} 曲线：j/k 选点，h/l 调 PWM，[ ] 调温度，a 写入",
+            fan.to_uppercase()
+        );
+        self.status_err = false;
+        Ok(())
+    }
+
+    fn handle_fan_edit_key(&mut self, key: KeyEvent) -> Result<()> {
+        let mut apply = None;
+        let mut close = false;
+        let mut switch = None;
+
+        if let Some(edit) = self.fan_edit.as_mut() {
+            match key.code {
+                KeyCode::Esc => close = true,
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if !edit.temp.is_empty() {
+                        edit.sel = (edit.sel + 1) % edit.temp.len();
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if !edit.temp.is_empty() {
+                        edit.sel = (edit.sel + edit.temp.len() - 1) % edit.temp.len();
+                    }
+                }
+                KeyCode::Left | KeyCode::Char('h') => edit.adjust_pwm(-1),
+                KeyCode::Right | KeyCode::Char('l') => edit.adjust_pwm(1),
+                KeyCode::Char('H') => edit.adjust_pwm(-10),
+                KeyCode::Char('L') => edit.adjust_pwm(10),
+                KeyCode::Char('[') => edit.adjust_temp(-1),
+                KeyCode::Char(']') => edit.adjust_temp(1),
+                KeyCode::Char('c') => {
+                    switch = Some(if edit.fan.eq_ignore_ascii_case("cpu") {
+                        "gpu"
+                    } else {
+                        "cpu"
+                    });
+                }
+                KeyCode::Char('a') => apply = Some(edit.clone()),
+                _ => {}
+            }
+        }
+
+        if let Some(next) = switch {
+            self.open_fan_edit(next)?;
+            self.status = format!(
+                "已切换到 {} 曲线（未保存的修改已丢弃）",
+                next.to_uppercase()
+            );
+        }
+
+        if close {
+            if self.fan_edit.as_ref().is_some_and(|e| e.dirty) {
+                self.confirm(
+                    "放弃修改",
+                    "风扇曲线有未写入的修改，确定放弃？",
+                    Pending::FanEditClose,
+                );
+            } else {
+                self.fan_edit = None;
+            }
+        }
+
+        if let Some(edit) = apply {
+            self.confirm(
+                "写入风扇曲线",
+                format!(
+                    "把 {} 曲线写入 {} 模式？\n\n{}",
+                    edit.fan.to_uppercase(),
+                    self.profile.map(|p| p.active.zh()).unwrap_or("当前"),
+                    pretty_fan_data(&edit.data())
+                ),
+                Pending::FanCurveApply(edit),
+            );
+        }
+
         Ok(())
     }
 
@@ -1186,6 +1401,18 @@ impl App {
                 asus::fan_default(profile)?;
                 self.status = format!("{} 的风扇曲线已恢复默认", profile.zh());
             }
+            Pending::FanCurveApply(edit) => {
+                let profile = self.profile.map(|p| p.active).unwrap_or(Profile::Balanced);
+                asus::fan_set_curve(profile, &edit.fan, &edit.data())?;
+                if let Some(current) = self.fan_edit.as_mut() {
+                    current.dirty = false;
+                }
+                self.status = format!("{} 风扇曲线已写入", edit.fan.to_uppercase());
+            }
+            Pending::FanEditClose => {
+                self.fan_edit = None;
+                self.status = "已放弃风扇曲线修改".into();
+            }
             Pending::FanToggle(enabled) => {
                 let profile = self.profile.map(|p| p.active).unwrap_or(Profile::Balanced);
                 asus::fan_set_enabled(profile, enabled)?;
@@ -1373,8 +1600,9 @@ fn help_text() -> String {
         "  h/l 调整上限   Enter 应用   o 单次充满",
         "",
         "风扇",
+        "  i 编辑 CPU   I 编辑 GPU   e 启用/停用   d 恢复默认",
+        "  编辑中：j/k 选点  h/l PWM±1  H/L ±10  [ ] 温度  a 写入  Esc 取消",
         "  j/k 选择预设   p 应用   s 保存当前曲线   x 删除",
-        "  d 恢复固件默认   e 启用/停用曲线",
         "",
         "灯光",
         "  b 切换键盘亮度   e/E 下一个/上一个灯效",

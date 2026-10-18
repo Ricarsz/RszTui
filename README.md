@@ -142,7 +142,14 @@ sudo rogtui aura static ff8800
 
 电池页：`h` / `l` 调上限，`Enter` 应用，`o` 单次充满。
 
-风扇页：`j/k` 选预设，`p` 应用，`s` 保存当前，`x` 删除，`d` 恢复默认，`e` 启用/停用。
+风扇页：
+
+- 上方是曲线图（横轴温度、纵轴 PWM），CPU 青色、GPU 紫色
+- `i` / `I` 进入 CPU / GPU 曲线编辑
+- 编辑中：`j/k` 选点，`h/l` 调 PWM ±1，`H/L` ±10，`[`/`]` 调温度 ±1，`c` 切 CPU/GPU，`a` 写入，`Esc` 取消
+- 非编辑：`j/k` 选预设，`p` 应用，`s` 保存当前，`x` 删除，`d` 恢复默认，`e` 启用/停用
+
+小键盘：NumLock 关闭时终端直接发方向键；NumLock 开启时，如果终端支持 Kitty 键盘协议（kitty / foot / WezTerm / Alacritty），会识别为 KEYPAD 并把 `8/2/4/6/5` 映射为 上/下/左/右/确认。不支持该协议的终端请关闭 NumLock。
 
 灯光页：`b` 亮度，`e/E` 下一个/上一个灯效，`c` 选颜色，`S` 应用静态色。
 
@@ -213,4 +220,5 @@ src/
 - 网络只处理 IPv4；IPv6 仍由 NetworkManager 默认策略管理。
 - DoT 依赖 NetworkManager + systemd-resolved；DoH 不原生支持。
 - 温度列表依赖 `hwmon` 标签，不同机型差异较大。
+- 风扇曲线编辑要求温度严格递增，相邻点会互相约束；PWM 范围 0-255。
 - 不自动备份，写坏了需要手动恢复。
