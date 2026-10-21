@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -218,7 +218,7 @@ impl FanEdit {
 #[derive(Debug, Clone)]
 pub enum InputAction {
     Wifi { ssid: String, key_mgmt: String },
-    Hotspot,
+    WifiPassword { conn: String },
     Ping,
     DnsLookup,
     DnsCacheSize,
@@ -296,6 +296,14 @@ pub enum Pending {
     Quit,
 }
 
+#[derive(Debug, Clone)]
+pub struct HotspotForm {
+    pub ssid: String,
+    pub password: String,
+    /// 0 = SSID，1 = 密码
+    pub focus: usize,
+}
+
 #[derive(Debug)]
 pub enum Modal {
     Confirm {
@@ -314,6 +322,7 @@ pub enum Modal {
         masked: bool,
         action: InputAction,
     },
+    Hotspot(HotspotForm),
 }
 
 struct CoreSnapshot {
@@ -385,6 +394,8 @@ pub struct App {
     pub status: String,
     pub status_err: bool,
     pub modal: Option<Modal>,
+    pub modal_scroll: Cell<u16>,
+    pub hotspot_ssid: String,
     pub mouse_targets: RefCell<Vec<MouseTarget>>,
     pub quit: bool,
     last_slow: Instant,
@@ -481,6 +492,8 @@ impl App {
             status: "就绪".into(),
             status_err: false,
             modal: None,
+            modal_scroll: Cell::new(0),
+            hotspot_ssid: "rsztui-hotspot".into(),
             mouse_targets: RefCell::new(Vec::new()),
             quit: false,
             last_slow: Instant::now(),
@@ -506,12 +519,18 @@ impl App {
             app.limit_edit = limit;
         }
         if app.deps.has_warnings() {
-            app.modal = Some(Modal::Message {
-                title: "依赖检查".into(),
-                body: app.deps.summary_text(),
-            });
+            let body = app.deps.summary_text();
+            app.show_message("依赖检查", body);
         }
         app
+    }
+
+    fn show_message(&mut self, title: impl Into<String>, body: impl Into<String>) {
+        self.modal_scroll.set(0);
+        self.modal = Some(Modal::Message {
+            title: title.into(),
+            body: body.into(),
+        });
     }
 
     fn event_loop(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -618,10 +637,8 @@ impl App {
                 self.status_err = false;
             }
             KeyCode::Char('?') => {
-                self.modal = Some(Modal::Message {
-                    title: "快捷键".into(),
-                    body: help_text(),
-                });
+                let body = help_text();
+                self.show_message("快捷键", body);
             }
             KeyCode::Tab => self.switch_tab(Tab::next(self.tab)),
             KeyCode::BackTab => self.switch_tab(Tab::prev(self.tab)),
@@ -715,14 +732,17 @@ impl App {
     }
 
     fn scroll(&mut self, direction: i32) -> Result<()> {
-        if self.ip_form.is_some() {
-            return Ok(());
-        }
         let code = if direction < 0 {
             KeyCode::Up
         } else {
             KeyCode::Down
         };
+        if self.modal.is_some() {
+            return self.handle_modal_key(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+        if self.ip_form.is_some() {
+            return Ok(());
+        }
         self.handle_tab_key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
@@ -895,12 +915,79 @@ impl App {
         match self.modal.take() {
             Some(Modal::Confirm { pending, .. }) => self.apply_pending(pending)?,
             Some(Modal::Input { value, action, .. }) => self.submit_input(action, value)?,
+            Some(Modal::Hotspot(form)) => self.start_hotspot(form)?,
             Some(Modal::Message { .. }) | None => {}
         }
         Ok(())
     }
 
     fn handle_modal_key(&mut self, key: KeyEvent) -> Result<()> {
+        if matches!(self.modal, Some(Modal::Message { .. })) {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => self.modal = None,
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.modal_scroll
+                        .set(self.modal_scroll.get().saturating_add(1));
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.modal_scroll
+                        .set(self.modal_scroll.get().saturating_sub(1));
+                }
+                KeyCode::PageDown => {
+                    self.modal_scroll
+                        .set(self.modal_scroll.get().saturating_add(10));
+                }
+                KeyCode::PageUp => {
+                    self.modal_scroll
+                        .set(self.modal_scroll.get().saturating_sub(10));
+                }
+                KeyCode::Home => self.modal_scroll.set(0),
+                _ => {}
+            }
+            return Ok(());
+        }
+
+        if matches!(self.modal, Some(Modal::Hotspot(_))) {
+            match key.code {
+                KeyCode::Esc => self.modal = None,
+                KeyCode::Enter => {
+                    if let Some(Modal::Hotspot(form)) = self.modal.take() {
+                        self.start_hotspot(form)?;
+                    }
+                }
+                KeyCode::Tab | KeyCode::Up | KeyCode::Down => {
+                    if let Some(Modal::Hotspot(form)) = self.modal.as_mut() {
+                        form.focus = 1 - form.focus;
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let Some(Modal::Hotspot(form)) = self.modal.as_mut() {
+                        let field = if form.focus == 0 {
+                            &mut form.ssid
+                        } else {
+                            &mut form.password
+                        };
+                        field.pop();
+                    }
+                }
+                KeyCode::Char(c) if !c.is_control() => {
+                    if let Some(Modal::Hotspot(form)) = self.modal.as_mut() {
+                        let field = if form.focus == 0 {
+                            &mut form.ssid
+                        } else {
+                            &mut form.password
+                        };
+                        let max = if form.focus == 0 { 32 } else { 63 };
+                        if field.chars().count() < max {
+                            field.push(c);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
         if let Some(Modal::Input { value, .. }) = &mut self.modal {
             match key.code {
                 KeyCode::Esc => self.modal = None,
@@ -928,6 +1015,22 @@ impl App {
         Ok(())
     }
 
+    fn start_hotspot(&mut self, form: HotspotForm) -> Result<()> {
+        let ssid = form.ssid.trim();
+        if ssid.is_empty() {
+            bail!("热点 SSID 不能为空");
+        }
+        if form.password.chars().count() < 8 {
+            bail!("热点密码至少 8 位");
+        }
+        nm::hotspot(&form.password, ssid)?;
+        self.hotspot_ssid = ssid.to_string();
+        self.status = format!("热点已开启：{ssid}");
+        self.status_err = false;
+        self.refresh_slow();
+        Ok(())
+    }
+
     fn submit_input(&mut self, action: InputAction, value: String) -> Result<()> {
         if value.trim().is_empty() {
             bail!("输入不能为空");
@@ -937,23 +1040,17 @@ impl App {
                 nm::wifi_connect(&ssid, Some(&value), &key_mgmt, true)?;
                 self.status = format!("已连接 Wi-Fi：{ssid}");
             }
-            InputAction::Hotspot => {
-                nm::hotspot(&value, "rsztui-hotspot")?;
-                self.status = "热点已开启：rsztui-hotspot".into();
+            InputAction::WifiPassword { conn } => {
+                nm::set_wifi_password(&conn, &value)?;
+                self.status = format!("已更新 Wi-Fi 密码：{conn}");
             }
             InputAction::Ping => {
                 let output = nm::ping(&value)?;
-                self.modal = Some(Modal::Message {
-                    title: format!("Ping {value}"),
-                    body: output,
-                });
+                self.show_message(format!("Ping {value}"), output);
             }
             InputAction::DnsLookup => {
                 let output = nm::dns_query(&value)?;
-                self.modal = Some(Modal::Message {
-                    title: format!("DNS 查询 {value}"),
-                    body: output,
-                });
+                self.show_message(format!("DNS 查询 {value}"), output);
             }
             InputAction::DnsCacheSize => {
                 let size: u32 = value
@@ -1725,6 +1822,7 @@ impl App {
                 );
             }
             KeyCode::Char('t') => self.toggle_hotspot(),
+            KeyCode::Char('P') => self.open_wifi_password()?,
             KeyCode::Char('c') => self.open_cache(),
             KeyCode::Char('p') => self.open_ping_input(),
             KeyCode::Char('n') => self.open_dns_input(),
@@ -1932,14 +2030,44 @@ impl App {
         if nm::hotspot_active() {
             self.confirm("关闭热点", "关闭 rsztui-hotspot？", Pending::HotspotOff);
         } else {
-            self.modal = Some(Modal::Input {
-                title: "开启热点".into(),
-                prompt: "热点 SSID：rsztui-hotspot，密码（可改）".into(),
-                value: random_password(),
-                masked: false,
-                action: InputAction::Hotspot,
-            });
+            self.modal = Some(Modal::Hotspot(HotspotForm {
+                ssid: self.hotspot_ssid.clone(),
+                password: random_password(),
+                focus: 0,
+            }));
         }
+    }
+
+    fn open_wifi_password(&mut self) -> Result<()> {
+        let (conn, label) = match self.net_view {
+            NetView::Connections => {
+                let Some(conn) = self.selected_connection() else {
+                    bail!("没有选中连接");
+                };
+                if !conn.kind.contains("wireless") {
+                    bail!("只有 Wi-Fi 连接支持修改密码");
+                }
+                (conn.name.clone(), conn.name)
+            }
+            NetView::Wifi => {
+                let Some(ap) = self.wifi.get(self.net_sel).cloned() else {
+                    bail!("没有选中 Wi-Fi");
+                };
+                let Some(profile) = nm::wifi_profile(&ap.ssid)? else {
+                    bail!("「{}」还没有保存的连接，请先连接一次", ap.ssid);
+                };
+                (profile.name, ap.ssid)
+            }
+            NetView::Vpn => bail!("VPN 暂不支持在此修改密码"),
+        };
+        self.modal = Some(Modal::Input {
+            title: "修改 Wi-Fi 密码".into(),
+            prompt: format!("{label} 的新密码（8–63 位）"),
+            value: String::new(),
+            masked: true,
+            action: InputAction::WifiPassword { conn },
+        });
+        Ok(())
     }
 
     fn handle_ip_form_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -2519,15 +2647,18 @@ fn help_text() -> String {
         "网络",
         "  v 切换 连接/Wi-Fi/VPN   j/k 选择   Enter 连接或编辑",
         "  u 激活   d 断开   x 删除   o Wi-Fi 开关   t 热点",
+        "  P 修改 Wi-Fi 密码（需已保存该连接）",
         "  p Ping   n DNS 查询   c 网络缓存（DNS/邻居）",
         "  IPv4 编辑：Enter 切换方法/下一项，直接输入，a 应用",
+        "  热点：Tab/↑↓ 切换 SSID 与密码，Enter 开启",
         "",
         "设置",
         "  t 下一个主题   y 下一种速率格式   也可直接点击设置页的选项",
         "",
         "说明",
-        "  修改直接写入 asusd/NM，不生成备份文件",
+        "  硬件修改直接写入 asusd/NM；配置文件写入前自动备份为 config.toml.bak",
         "  功耗值写入当前性能模式的 tuning，重启后由 asusd 自动恢复",
+        "  长文本弹窗用 j/k 或 PgUp/PgDn 滚动，Enter/Esc 关闭",
     ]
     .join("\n")
 }

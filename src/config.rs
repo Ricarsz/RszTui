@@ -1,5 +1,8 @@
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -158,26 +161,121 @@ impl Config {
 
         let text =
             fs::read_to_string(&path).with_context(|| format!("无法读取 {}", path.display()))?;
-        let cfg: Config =
-            toml::from_str(&text).with_context(|| format!("解析 {} 失败", path.display()))?;
-        Ok(cfg)
+        match toml::from_str::<Config>(&text) {
+            Ok(cfg) => Ok(cfg),
+            Err(err) => {
+                // 配置损坏时先留档，再用默认值重建，避免用户手动找回。
+                let stamp = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let broken = path.with_file_name(format!("config.toml.corrupt-{stamp}"));
+                fs::rename(&path, &broken)
+                    .with_context(|| format!("配置解析失败，且无法备份到 {}", broken.display()))?;
+                util::chown_to_sudo_user(&broken);
+                eprintln!(
+                    "配置解析失败，已备份为 {}，将使用默认配置：{err:#}",
+                    broken.display()
+                );
+                let cfg = Self::default();
+                cfg.save()?;
+                Ok(cfg)
+            }
+        }
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = Self::path();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("无法创建 {}", parent.display()))?;
-        }
         let text = toml::to_string_pretty(self)?;
-        fs::write(&path, text).with_context(|| format!("无法写入 {}", path.display()))?;
-        util::chown_to_sudo_user(&path);
-        if let Some(parent) = path.parent() {
-            util::chown_to_sudo_user(parent);
-        }
-        Ok(())
+        write_atomic(&Self::path(), &text)
     }
 
     pub fn preset(&self, index: usize) -> Option<&PowerPreset> {
         self.power_presets.get(index)
+    }
+}
+
+/// 先写临时文件并 fsync，再原子替换；旧文件保留为 `.bak`。
+/// 这样即使写入过程中断电，也不会留下半截配置。
+fn write_atomic(path: &Path, text: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("无法创建 {}", parent.display()))?;
+    }
+
+    let backup = with_suffix(path, ".bak");
+    if path.exists() {
+        fs::copy(path, &backup).with_context(|| format!("无法备份配置到 {}", backup.display()))?;
+        util::chown_to_sudo_user(&backup);
+    }
+
+    let tmp = with_suffix(path, ".tmp");
+    let result = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)
+            .with_context(|| format!("无法写入 {}", tmp.display()))?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        util::chown_to_sudo_user(&tmp);
+        fs::rename(&tmp, path).with_context(|| format!("无法替换 {}", path.display()))?;
+        util::chown_to_sudo_user(path);
+        if let Some(parent) = path.parent() {
+            util::chown_to_sudo_user(parent);
+        }
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(suffix);
+    path.with_file_name(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_config(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "rsztui-config-test-{}-{name}.toml",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn atomic_write_keeps_backup_and_content() {
+        let path = temp_config("write");
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(with_suffix(&path, ".bak"));
+
+        write_atomic(&path, "first = 1\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "first = 1\n");
+
+        write_atomic(&path, "second = 2\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second = 2\n");
+        assert_eq!(
+            fs::read_to_string(with_suffix(&path, ".bak")).unwrap(),
+            "first = 1\n"
+        );
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(with_suffix(&path, ".bak"));
+    }
+
+    #[test]
+    fn with_suffix_appends_after_extension() {
+        assert_eq!(
+            with_suffix(Path::new("/tmp/config.toml"), ".bak"),
+            PathBuf::from("/tmp/config.toml.bak")
+        );
     }
 }

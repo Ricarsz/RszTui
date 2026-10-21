@@ -112,6 +112,7 @@ pub struct BatteryInfo {
     pub energy_full_wh: Option<f32>,
     pub energy_full_design_wh: Option<f32>,
     pub cycle_count: Option<u32>,
+    pub energy_now_wh: Option<f32>,
     pub ac_online: Option<bool>,
     pub manufacturer: String,
     pub model: String,
@@ -134,6 +135,16 @@ impl BatteryInfo {
             (Some(full), Some(design)) if design > 0.0 => Some(full / design * 100.0),
             _ => None,
         }
+    }
+
+    /// 按当前放电功率估算剩余时间（小时）。
+    pub fn hours_left(&self) -> Option<f32> {
+        if self.status != "Discharging" {
+            return None;
+        }
+        let now = self.energy_now_wh?;
+        let power = self.power_w?;
+        (power > 0.1).then(|| now / power)
     }
 }
 
@@ -196,6 +207,17 @@ pub fn battery_info() -> Result<BatteryInfo> {
             .or_else(|| {
                 nominal_v.and_then(|volts| {
                     read_sys(&bat.join("charge_full_design"))
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .map(|charge| (charge / 1_000_000.0 * volts) as f32)
+                })
+            });
+
+        info.energy_now_wh = read_sys(&bat.join("energy_now"))
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|v| (v / 1_000_000.0) as f32)
+            .or_else(|| {
+                nominal_v.and_then(|volts| {
+                    read_sys(&bat.join("charge_now"))
                         .and_then(|v| v.parse::<f64>().ok())
                         .map(|charge| (charge / 1_000_000.0 * volts) as f32)
                 })

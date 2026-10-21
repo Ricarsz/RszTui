@@ -1,3 +1,4 @@
+use std::ffi::CString;
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
@@ -16,6 +17,15 @@ pub struct Snapshot {
     pub max_temp: Option<f32>,
     pub gpu_temp: Option<f32>,
     pub load1: f32,
+    pub load5: f32,
+    pub load15: f32,
+    pub cpu_mhz: Option<f32>,
+    pub swap_used: u64,
+    pub swap_total: u64,
+    pub fans: Vec<(String, u32)>,
+    pub gpu_load: Option<u8>,
+    pub disk_used: u64,
+    pub disk_total: u64,
     pub uptime: u64,
 }
 
@@ -67,6 +77,16 @@ impl Collector {
             snap.mem_total = mem.total;
             snap.mem_cached = mem.cached;
             snap.mem_free = mem.free;
+            snap.swap_used = mem.swap_used;
+            snap.swap_total = mem.swap_total;
+        }
+
+        snap.cpu_mhz = cpu_mhz();
+        snap.fans = fan_speeds();
+        snap.gpu_load = gpu_load();
+        if let Some((used, total)) = disk_usage("/") {
+            snap.disk_used = used;
+            snap.disk_total = total;
         }
 
         if let Some((rx, tx)) = net_bytes() {
@@ -90,10 +110,11 @@ impl Collector {
         snap.max_temp = temps.iter().map(|(_, v)| *v).reduce(f32::max);
         snap.temps = temps;
 
-        if let Ok(text) = fs::read_to_string("/proc/loadavg")
-            && let Some(first) = text.split_whitespace().next()
-        {
-            snap.load1 = first.parse().unwrap_or(0.0);
+        if let Ok(text) = fs::read_to_string("/proc/loadavg") {
+            let mut fields = text.split_whitespace();
+            snap.load1 = fields.next().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            snap.load5 = fields.next().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            snap.load15 = fields.next().and_then(|v| v.parse().ok()).unwrap_or(0.0);
         }
 
         if let Ok(text) = fs::read_to_string("/proc/uptime")
@@ -146,6 +167,8 @@ struct MemInfo {
     total: u64,
     cached: u64,
     free: u64,
+    swap_used: u64,
+    swap_total: u64,
 }
 
 fn mem_info() -> Option<MemInfo> {
@@ -164,12 +187,109 @@ fn mem_info() -> Option<MemInfo> {
         + value("Buffers:").unwrap_or(0) * 1024;
     let used = total.saturating_sub(available);
     let free = total.saturating_sub(used + cached);
+    let swap_total = value("SwapTotal:").unwrap_or(0) * 1024;
+    let swap_free = value("SwapFree:").unwrap_or(0) * 1024;
     Some(MemInfo {
         used,
         total,
         cached,
         free,
+        swap_used: swap_total.saturating_sub(swap_free),
+        swap_total,
     })
+}
+
+fn cpu_mhz() -> Option<f32> {
+    let text = fs::read_to_string("/proc/cpuinfo").ok()?;
+    let mut sum = 0.0f64;
+    let mut count = 0u32;
+    for line in text.lines() {
+        if let Some(value) = line.strip_prefix("cpu MHz")
+            && let Some(value) = value.split(':').nth(1)
+            && let Ok(mhz) = value.trim().parse::<f64>()
+        {
+            sum += mhz;
+            count += 1;
+        }
+    }
+    (count > 0).then(|| (sum / count as f64 / 1000.0) as f32)
+}
+
+fn fan_speeds() -> Vec<(String, u32)> {
+    let mut result = Vec::new();
+    let Ok(entries) = fs::read_dir("/sys/class/hwmon") else {
+        return result;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let dir = entry.path();
+        let chip = fs::read_to_string(dir.join("name"))
+            .map(|v| v.trim().to_string())
+            .unwrap_or_default();
+        // asus 提供 cpu_fan / gpu_fan 两路实际转速。
+        if chip != "asus" {
+            continue;
+        }
+        let Ok(files) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for file in files.filter_map(|e| e.ok()) {
+            let name = file.file_name().to_string_lossy().into_owned();
+            let Some(stem) = name.strip_suffix("_input") else {
+                continue;
+            };
+            if !stem.starts_with("fan") {
+                continue;
+            }
+            let Ok(raw) = fs::read_to_string(file.path()) else {
+                continue;
+            };
+            let Ok(rpm) = raw.trim().parse::<u32>() else {
+                continue;
+            };
+            let label = fs::read_to_string(dir.join(format!("{stem}_label")))
+                .map(|v| v.trim().to_string())
+                .unwrap_or_default();
+            let label = match label.as_str() {
+                "cpu_fan" => "CPU".to_string(),
+                "gpu_fan" => "GPU".to_string(),
+                "" => format!("风扇{}", &stem[3..]),
+                other => other.to_string(),
+            };
+            result.push((label, rpm));
+        }
+    }
+    result.sort_by(|a, b| a.0.cmp(&b.0));
+    result
+}
+
+fn gpu_load() -> Option<u8> {
+    let entries = fs::read_dir("/sys/class/drm").ok()?;
+    let mut load = None;
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("card") || !name[4..].chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let path = entry.path().join("device/gpu_busy_percent");
+        if let Some(value) = read_u64(&path) {
+            let value = value.min(100) as u8;
+            load = Some(load.map_or(value, |v: u8| v.max(value)));
+        }
+    }
+    load
+}
+
+fn disk_usage(path: &str) -> Option<(u64, u64)> {
+    let path = CString::new(path).ok()?;
+    // SAFETY: statvfs 只读填充调用方提供的结构体，指针来自有效的 CString。
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+    let block = stat.f_frsize as u64;
+    let total = stat.f_blocks as u64 * block;
+    let free = stat.f_bavail as u64 * block;
+    Some((total.saturating_sub(free), total))
 }
 
 fn net_bytes() -> Option<(u64, u64)> {

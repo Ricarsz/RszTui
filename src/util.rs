@@ -1,7 +1,10 @@
 use std::env;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
@@ -14,29 +17,76 @@ pub fn is_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
+/// 单条外部命令的默认时限，防止 nmcli/asusctl 卡住把整个 TUI 拖死。
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// 执行命令，强制 C locale，返回 stdout。失败时带上 stderr。
 pub fn run(program: &str, args: &[&str]) -> Result<String> {
-    let output = Command::new(program)
+    run_timeout(program, args, COMMAND_TIMEOUT)
+}
+
+pub fn run_timeout(program: &str, args: &[&str], timeout: Duration) -> Result<String> {
+    let mut child = Command::new(program)
         .args(args)
         .env("LC_ALL", "C")
         .env("LANG", "C")
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .with_context(|| format!("无法执行 {program}，请确认已安装"))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut stdout = child.stdout.take().context("无法读取命令的标准输出")?;
+    let mut stderr = child.stderr.take().context("无法读取命令的错误输出")?;
+
+    // 单独线程读取管道，避免输出过多时子进程阻塞、双方互等。
+    let out_thread = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        buf
+    });
+    let err_thread = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr.read_to_end(&mut buf);
+        buf
+    });
+
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().context("等待命令退出失败")? {
+            break status;
+        }
+        if start.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = out_thread.join();
+            let _ = err_thread.join();
+            bail!(
+                "{program} {} 超时（{} 秒），已终止",
+                args.join(" "),
+                timeout.as_secs()
+            );
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+
+    let stdout = out_thread.join().unwrap_or_default();
+    let stderr = err_thread.join().unwrap_or_default();
+
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr);
         let detail = stderr.trim();
         if detail.is_empty() {
             bail!(
                 "{program} {} 失败（退出码 {:?}）",
                 args.join(" "),
-                output.status.code()
+                status.code()
             );
         }
         bail!("{program} {} 失败：{detail}", args.join(" "));
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
 /// 解析 /etc/passwd 中某个用户的 home。sudo 下 HOME 会变成 /root，这里还原真实用户。
@@ -220,5 +270,13 @@ mod tests {
             vec!["wlan0", "wifi", "connected", "My:SSID"]
         );
         assert_eq!(split_nmcli("a:b:c"), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn timeout_kills_hung_command() {
+        let start = Instant::now();
+        let err = run_timeout("sleep", &["10"], Duration::from_millis(150)).unwrap_err();
+        assert!(err.to_string().contains("超时"), "{err:#}");
+        assert!(start.elapsed() < Duration::from_secs(3));
     }
 }

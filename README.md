@@ -7,12 +7,13 @@ ASUS TUF 的终端控制台。Rust + [ratatui](https://ratatui.rs/)，底层调�
 ## 特性
 
 - **性能/功耗**：三种性能模式、AC/电池默认模式、PL1/PL2/PL3、dGPU TGP、Dynamic Boost、温度墙
-- **电池**：20–100% 充电上限、单次充满、健康度/循环/功率
+- **电池**：20–100% 充电上限、单次充满、健康度/循环/功率/剩余时间
 - **GPU**：集显 / 混合 / 独显直连（`asusctl armoury`，需重启）
-- **风扇**：图形化曲线、逐点编辑、原始 PWM 保存、预设
+- **风扇**：图形化曲线、逐点编辑、原始 PWM 保存、预设、当前转速
 - **灯光**：当前灯效/亮度/颜色、Aura 模式切换、静态色
-- **网络**：Wi-Fi 扫描连接、DHCP/静态 IP、网关、DNS/DoT、VPN、热点、连接管理、Ping/DNS 查询、DNS/邻居缓存
+- **网络**：Wi-Fi 扫描连接与改密码、DHCP/静态 IP、网关、DNS/DoT、VPN、热点（可改 SSID/密码）、连接管理、Ping/DNS 查询、DNS/邻居缓存、IPv6 只读展示
 - **服务**：asusd、asus-shutdown、NetworkManager、systemd-resolved 的启停/重启/自启
+- **监控**：CPU 频率与负载、内存/交换、磁盘占用、GPU 负载、风扇转速、温度
 - **外观**：5 套配色主题，网络速率单位可选二进制 / 十进制 / 比特
 - **诊断**：发行版、ASUS 笔记本、CPU/GPU 型号、asusctl/asusd/nmcli/NetworkManager 检测
 - **CLI**：与 TUI 同能力，支持 `--json`

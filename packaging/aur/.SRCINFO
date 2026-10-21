@@ -1,6 +1,6 @@
 pkgbase = rsztui
 	pkgdesc = Terminal control panel for ASUS TUF laptops using asusctl and NetworkManager
-	pkgver = 1.0.1
+	pkgver = 1.1.0
 	pkgrel = 1
 	url = https://github.com/Ricarsz/RszTui
 	arch = x86_64

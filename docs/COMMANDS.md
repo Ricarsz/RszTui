@@ -123,7 +123,7 @@ sudo rsztui service disable asus-shutdown --now
 | `Home` / `End` | 跳到列表首/尾 |
 | `PageUp` / `PageDown` | 列表翻 5 项 |
 
-鼠标：点击导航/列表/操作栏/性能页各面板，点击列表行选中，双击条目执行默认操作（切换性能模式/应用预设/进入连接/应用 GPU/应用颜色），滚轮上下移动当前列表。弹窗底部有可点的确认/取消按钮；性能/电池/服务/灯光/风扇页底部有可点操作栏。小键盘：NumLock 关闭时直接发方向键；NumLock 开启且终端支持 Kitty 键盘协议时，`8/2/4/6/5` 映射为上/下/左/右/确认。
+鼠标：点击导航/列表/操作栏/性能页各面板，点击列表行选中，双击条目执行默认操作（切换性能模式/应用预设/进入连接/应用 GPU/应用颜色），滚轮上下移动当前列表。弹窗底部有可点的确认/取消按钮；性能/电池/服务/灯光/风扇页底部有可点操作栏。小键盘：NumLock 关闭时直接发方向键；NumLock 开启且终端支持 Kitty 键盘协议时，`8/2/4/6/5` 映射为上/下/左/右/确认。长文本弹窗（帮助/Ping/DNS）用 `j/k` 或 `PageUp/PageDown` 滚动，`Enter`/`Esc` 关闭。
 
 ### 性能
 
@@ -171,13 +171,18 @@ sudo rsztui service disable asus-shutdown --now
 | `u` / `d` | 激活 / 断开 |
 | `x` | 删除连接 |
 | `o` | Wi-Fi 开关 |
-| `t` | 热点 |
+| `t` | 热点（可编辑 SSID/密码） |
+| `P` | 修改已保存 Wi-Fi 连接的密码 |
 | `s` | 重新扫描 Wi-Fi |
 | `p` | Ping 测试 |
 | `n` | DNS 查询 |
 | `c` | DNS/邻居缓存面板 |
 
 IPv4 编辑：`j/k` 选字段，`Enter` 切换方法/下一项，直接输入，`Backspace` 删除，`Ctrl+U` 清空，`a` 应用，`Esc` 取消。
+
+热点：`t` 打开表单，`Tab`/`↑↓` 切换 SSID 与密码，`Enter` 开启（连接 id 固定为 `rsztui-hotspot`）；热点已开启时再按 `t` 会确认关闭。`P` 修改当前选中（或当前已连接）Wi-Fi 的密码，改完自动重连。
+
+详情页的 IPv6 地址、网关和 DNS 为只读展示，配置仍由 NetworkManager 的默认策略管理。
 
 缓存面板：`f` 清空 DNS 缓存，`F` 清空邻居缓存，`e` 修改 DNS 缓存上限（写入 `/etc/systemd/resolved.conf.d/rsztui-cache.conf` 并重启 resolved），`r` 刷新统计，`Esc` 关闭。
 

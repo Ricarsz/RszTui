@@ -61,6 +61,9 @@ pub struct DeviceDetail {
     pub gateway: String,
     pub dns: String,
     pub routes: String,
+    pub ip6_addresses: String,
+    pub ip6_gateway: String,
+    pub ip6_dns: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -238,7 +241,7 @@ pub fn device_detail(device: &str) -> Result<DeviceDetail> {
         &[
             "-t",
             "-f",
-            "GENERAL.DEVICE,GENERAL.TYPE,GENERAL.STATE,GENERAL.CONNECTION,GENERAL.HWADDR,GENERAL.MTU,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS,IP4.ROUTE",
+            "GENERAL.DEVICE,GENERAL.TYPE,GENERAL.STATE,GENERAL.CONNECTION,GENERAL.HWADDR,GENERAL.MTU,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS,IP4.ROUTE,IP6.ADDRESS,IP6.GATEWAY,IP6.DNS",
             "device",
             "show",
             device,
@@ -252,6 +255,8 @@ pub fn device_detail(device: &str) -> Result<DeviceDetail> {
     let mut addresses = Vec::new();
     let mut dns = Vec::new();
     let mut routes = Vec::new();
+    let mut ip6_addresses = Vec::new();
+    let mut ip6_dns = Vec::new();
 
     for line in out.lines() {
         let parts = util::split_nmcli(line);
@@ -280,12 +285,22 @@ pub fn device_detail(device: &str) -> Result<DeviceDetail> {
             dns.push(value);
         } else if key.starts_with("IP4.ROUTE") && !value.is_empty() {
             routes.push(value);
+        } else if key.starts_with("IP6.ADDRESS") {
+            if !value.is_empty() {
+                ip6_addresses.push(value);
+            }
+        } else if key.starts_with("IP6.GATEWAY") {
+            detail.ip6_gateway = value;
+        } else if key.starts_with("IP6.DNS") && !value.is_empty() {
+            ip6_dns.push(value);
         }
     }
 
     detail.addresses = addresses.join(", ");
     detail.dns = dns.join(", ");
     detail.routes = routes.join(" | ");
+    detail.ip6_addresses = ip6_addresses.join(", ");
+    detail.ip6_dns = ip6_dns.join(", ");
     detail.speed = fs::read_to_string(format!("/sys/class/net/{device}/speed"))
         .map(|v| v.trim().to_string())
         .ok()
@@ -641,6 +656,34 @@ fn validate_dns_list(value: &str) -> bool {
         .split([',', ' '])
         .filter(|v| !v.trim().is_empty())
         .all(|v| validate_ipv4(v.trim()))
+}
+
+/// 修改已保存 Wi-Fi 连接的密码；连接正在使用时立即重连生效。
+pub fn set_wifi_password(conn: &str, password: &str) -> Result<()> {
+    let len = password.chars().count();
+    if !(8..=63).contains(&len) {
+        bail!("WPA 密码长度需为 8–63 个字符");
+    }
+    let active = connections()?
+        .into_iter()
+        .find(|c| c.name == conn)
+        .is_some_and(|c| c.active);
+    util::run(
+        "nmcli",
+        &[
+            "connection",
+            "modify",
+            conn,
+            "wifi-sec.key-mgmt",
+            "wpa-psk",
+            "wifi-sec.psk",
+            password,
+        ],
+    )?;
+    if active {
+        connection_up(conn)?;
+    }
+    Ok(())
 }
 
 pub fn wifi_connect(

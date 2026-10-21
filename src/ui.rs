@@ -436,6 +436,14 @@ fn gpu_short(app: &App) -> &'static str {
     }
 }
 
+fn fan_rpm(app: &App, fan: &str) -> Option<u32> {
+    app.snap
+        .fans
+        .iter()
+        .find(|(label, _)| label.eq_ignore_ascii_case(fan))
+        .map(|(_, rpm)| *rpm)
+}
+
 fn format_uptime(seconds: u64) -> String {
     let days = seconds / 86400;
     let hours = (seconds % 86400) / 3600;
@@ -607,10 +615,6 @@ fn draw_cpu(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(pal().good).bold(),
         ),
         Span::styled(
-            format!("  负载 {:.2}", app.snap.load1),
-            Style::new().fg(pal().dim),
-        ),
-        Span::styled(
             format!(
                 "  Tctl {}",
                 cpu_temp
@@ -620,7 +624,24 @@ fn draw_cpu(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(pal().dim),
         ),
     ];
-    if inner.width >= 50 {
+    if inner.width >= 38
+        && let Some(mhz) = app.snap.cpu_mhz
+    {
+        summary.push(Span::styled(
+            format!("  {mhz:.2} GHz"),
+            Style::new().fg(pal().text),
+        ));
+    }
+    if inner.width >= 56 {
+        summary.push(Span::styled(
+            format!(
+                "  负载 {:.2} {:.2} {:.2}",
+                app.snap.load1, app.snap.load5, app.snap.load15
+            ),
+            Style::new().fg(pal().dim),
+        ));
+    }
+    if inner.width >= 74 {
         summary.push(Span::styled(
             format!("  量程 {graph_max}%"),
             Style::new().fg(pal().dim),
@@ -707,6 +728,19 @@ fn draw_memory(frame: &mut Frame, area: Rect, app: &App) {
             format!("   缓存 {}", util::human_bytes(cached as f64)),
             Style::new().fg(pal().dim),
         ));
+    }
+    if app.snap.swap_total > 0 {
+        if inner.width >= 72 {
+            legend.push(Span::styled(
+                format!(
+                    "   交换 {:.1}/{:.1}G",
+                    app.snap.swap_used as f64 / 1e9,
+                    app.snap.swap_total as f64 / 1e9
+                ),
+                Style::new().fg(pal().dim),
+            ));
+        }
+    } else if inner.width >= 55 {
         legend.push(Span::styled(
             format!("   空闲 {}", util::human_bytes(free as f64)),
             Style::new().fg(pal().dim),
@@ -819,7 +853,60 @@ fn draw_battery_panel(frame: &mut Frame, area: Rect, app: &App) {
     let block = panel(" 电池 ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    let capacity = app.battery.capacity.unwrap_or(0);
+    let power = app
+        .battery
+        .power_w
+        .map(|v| format!("{v:.1} W"))
+        .unwrap_or_else(|| "-".into());
+    let health = app
+        .battery
+        .health_pct()
+        .map(|v| format!("{v:.1}%"))
+        .unwrap_or_else(|| "-".into());
+    let limit = app
+        .battery
+        .limit
+        .map(|v| format!("{v}%"))
+        .unwrap_or_else(|| "-".into());
+
+    // 低高度下只保留最关键的读数，避免出现半截行。
+    if inner.height < 5 {
+        let cells = inner.width.saturating_sub(6) as usize;
+        let filled = ((capacity as f64 / 100.0) * cells as f64).round() as usize;
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "█".repeat(filled.min(cells)),
+                    Style::new().fg(battery_color(app)),
+                ),
+                Span::styled(
+                    "░".repeat(cells.saturating_sub(filled)),
+                    Style::new().fg(pal().faint),
+                ),
+                Span::styled(
+                    format!("  {capacity}%"),
+                    Style::new().fg(battery_color(app)).bold(),
+                ),
+            ])),
+            Rect::new(inner.x, inner.y, inner.width, 1),
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(
+                    "  {}   {power}   健康 {health}   限 {limit}",
+                    app.battery.status_zh()
+                ),
+                Style::new().fg(pal().dim),
+            ))),
+            Rect::new(inner.x, inner.y + 1, inner.width, 1),
+        );
+        return;
+    }
+
     let rows = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -827,8 +914,6 @@ fn draw_battery_panel(frame: &mut Frame, area: Rect, app: &App) {
         Constraint::Min(0),
     ])
     .split(inner);
-
-    let capacity = app.battery.capacity.unwrap_or(0);
     let cells = inner.width.saturating_sub(6) as usize;
     let filled = ((capacity as f64 / 100.0) * cells as f64).round() as usize;
     let bar = format!(
@@ -922,19 +1007,51 @@ fn draw_battery_panel(frame: &mut Frame, area: Rect, app: &App) {
         );
     }
 
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!(
-                "  电压 {}",
-                app.battery
-                    .voltage_v
-                    .map(|v| format!("{v:.2} V"))
-                    .unwrap_or_else(|| "-".into())
-            ),
-            Style::new().fg(pal().dim),
-        ))),
-        rows[4],
-    );
+    let mut tail = vec![Span::styled(
+        format!(
+            "  电压 {}",
+            app.battery
+                .voltage_v
+                .map(|v| format!("{v:.2} V"))
+                .unwrap_or_else(|| "-".into())
+        ),
+        Style::new().fg(pal().dim),
+    )];
+    if let Some(hours) = app.battery.hours_left() {
+        tail.push(Span::styled(
+            format!("   预计剩余 {hours:.1} h"),
+            Style::new().fg(pal().warn),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(tail)), rows[4]);
+
+    if !app.battery.manufacturer.is_empty() || !app.battery.model.is_empty() {
+        let maker = match (
+            app.battery.manufacturer.is_empty(),
+            app.battery.model.is_empty(),
+        ) {
+            (false, false) => format!("{} {}", app.battery.manufacturer, app.battery.model),
+            (false, true) => app.battery.manufacturer.clone(),
+            (true, false) => app.battery.model.clone(),
+            (true, true) => String::new(),
+        };
+        let technology = if app.battery.technology.is_empty() {
+            String::new()
+        } else {
+            format!("   {}", app.battery.technology)
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("  型号 ", Style::new().fg(pal().dim)),
+                Span::styled(
+                    util::truncate(&maker, inner.width.saturating_sub(20) as usize),
+                    Style::new().fg(pal().text),
+                ),
+                Span::styled(technology, Style::new().fg(pal().dim)),
+            ])),
+            rows[5],
+        );
+    }
 }
 
 fn draw_asus_panel(frame: &mut Frame, area: Rect, app: &App) {
@@ -968,6 +1085,38 @@ fn draw_asus_panel(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(power.join(" / "), Style::new().fg(pal().text)),
     ]));
 
+    if !app.snap.fans.is_empty() {
+        let fans: Vec<String> = app
+            .snap
+            .fans
+            .iter()
+            .take(2)
+            .map(|(label, rpm)| format!("{label} {rpm}"))
+            .collect();
+        lines.push(Line::from(vec![
+            Span::styled("  风扇  ", Style::new().fg(pal().dim)),
+            Span::styled(
+                format!("{} RPM", fans.join(" · ")),
+                Style::new().fg(pal().accent),
+            ),
+        ]));
+    }
+
+    if app.snap.disk_total > 0 {
+        let pct = app.snap.disk_used as f64 / app.snap.disk_total as f64 * 100.0;
+        lines.push(Line::from(vec![
+            Span::styled("  磁盘  ", Style::new().fg(pal().dim)),
+            Span::styled(
+                format!(
+                    "{} / {}  {pct:.0}%",
+                    util::human_bytes(app.snap.disk_used as f64),
+                    util::human_bytes(app.snap.disk_total as f64)
+                ),
+                Style::new().fg(if pct >= 90.0 { pal().bad } else { pal().text }),
+            ),
+        ]));
+    }
+
     let width = inner.width as usize;
     let cpu = format!(
         "{} ({}C/{}T)",
@@ -980,10 +1129,18 @@ fn draw_asus_panel(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(pal().text),
         ),
     ]));
+    let gpu_load = app
+        .snap
+        .gpu_load
+        .map(|load| format!(" · {load}%"))
+        .unwrap_or_default();
     lines.push(Line::from(vec![
         Span::styled("  显卡  ", Style::new().fg(pal().dim)),
         Span::styled(
-            util::truncate(&app.hw.gpus.join(" / "), width.saturating_sub(8)),
+            format!(
+                "{}{gpu_load}",
+                util::truncate(&app.hw.gpus.join(" / "), width.saturating_sub(12))
+            ),
             Style::new().fg(pal().text),
         ),
     ]));
@@ -1007,6 +1164,8 @@ fn draw_asus_panel(frame: &mut Frame, area: Rect, app: &App) {
         ),
     ]));
 
+    // 矮窗口优先保留前面的关键信息，避免出现半截行。
+    lines.truncate(inner.height as usize);
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
@@ -1823,7 +1982,7 @@ fn draw_fan_detail(frame: &mut Frame, area: Rect, app: &App) {
         } else {
             pal().chart
         };
-        lines.push(Line::from(vec![
+        let mut head = vec![
             Span::styled(
                 format!("  {:<4} ", curve.fan),
                 Style::new().fg(color).bold(),
@@ -1832,7 +1991,14 @@ fn draw_fan_detail(frame: &mut Frame, area: Rect, app: &App) {
                 if curve.enabled { "启用" } else { "停用" },
                 Style::new().fg(if curve.enabled { pal().good } else { pal().bad }),
             ),
-        ]));
+        ];
+        if let Some(rpm) = fan_rpm(app, &curve.fan) {
+            head.push(Span::styled(
+                format!("   {rpm} RPM"),
+                Style::new().fg(pal().accent),
+            ));
+        }
+        lines.push(Line::from(head));
         let temps: Vec<String> = curve.temp.iter().map(|temp| format!("{temp:>4}")).collect();
         let pwms: Vec<String> = curve.pwm.iter().map(|pwm| format!("{pwm:>4}")).collect();
         let percent: Vec<String> = curve
@@ -2624,6 +2790,23 @@ fn draw_net_details(frame: &mut Frame, area: Rect, app: &App) {
                         ));
                     }
                 }
+                if let Some(dev) = &app.net_detail
+                    && (!dev.ip6_addresses.is_empty()
+                        || !dev.ip6_gateway.is_empty()
+                        || !dev.ip6_dns.is_empty())
+                {
+                    lines.push(Line::raw(""));
+                    lines.push(section("IPv6"));
+                    if !dev.ip6_addresses.is_empty() {
+                        lines.push(detail("IPv6", util::truncate(&dev.ip6_addresses, 60)));
+                    }
+                    if !dev.ip6_gateway.is_empty() {
+                        lines.push(detail("网关", dev.ip6_gateway.clone()));
+                    }
+                    if !dev.ip6_dns.is_empty() {
+                        lines.push(detail("DNS", util::truncate(&dev.ip6_dns, 60)));
+                    }
+                }
                 lines.push(Line::raw(""));
                 lines.push(section("操作"));
                 lines.push(Line::from(Span::styled(
@@ -2632,6 +2815,10 @@ fn draw_net_details(frame: &mut Frame, area: Rect, app: &App) {
                 )));
                 lines.push(Line::from(Span::styled(
                     " u 激活   d 断开   x 删除",
+                    Style::new().fg(pal().dim),
+                )));
+                lines.push(Line::from(Span::styled(
+                    " P 修改 Wi-Fi 密码",
                     Style::new().fg(pal().dim),
                 )));
                 lines.push(Line::from(Span::styled(
@@ -3441,18 +3628,33 @@ fn draw_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal) {
             };
             (title.clone(), format!("{prompt}\n\n  {shown}▏"), true)
         }
+        Modal::Hotspot(form) => {
+            let mark = |focus: usize| if form.focus == focus { "▸" } else { " " };
+            let password = "●".repeat(form.password.chars().count());
+            (
+                "开启热点".into(),
+                format!(
+                    "{} SSID     {}\n\n{} 密码     {}",
+                    mark(0),
+                    form.ssid,
+                    mark(1),
+                    password
+                ),
+                true,
+            )
+        }
     };
     let buttons: Vec<(&str, MouseAction)> = match modal {
         Modal::Message { .. } => vec![("关闭", MouseAction::ModalConfirm)],
-        Modal::Input { .. } | Modal::Confirm { .. } => vec![
+        Modal::Input { .. } | Modal::Confirm { .. } | Modal::Hotspot(_) => vec![
             ("确认", MouseAction::ModalConfirm),
             ("取消", MouseAction::ModalCancel),
         ],
     };
-    let hint = if confirm {
-        "   Enter 确认 / Esc 取消"
-    } else {
-        "   Enter 关闭"
+    let hint = match (confirm, modal) {
+        (true, Modal::Hotspot(_)) => "   Tab 切换字段 · Enter 开启 / Esc 取消",
+        (true, _) => "   Enter 确认 / Esc 取消",
+        (false, _) => "   j/k 滚动 · Enter 关闭",
     };
 
     let button_width = buttons
@@ -3495,7 +3697,28 @@ fn draw_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal) {
     frame.render_widget(block, popup);
 
     let parts = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(inner);
-    frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), parts[0]);
+    let mut paragraph = Paragraph::new(body.clone()).wrap(Wrap { trim: false });
+    if matches!(modal, Modal::Message { .. }) {
+        let total = wrapped_line_count(&body, inner_width) as u16;
+        let max_scroll = total.saturating_sub(parts[0].height);
+        let scroll = app.modal_scroll.get().min(max_scroll);
+        app.modal_scroll.set(scroll);
+        paragraph = paragraph.scroll((scroll, 0));
+        if max_scroll > 0 {
+            let mut state = ratatui::widgets::ScrollbarState::new(max_scroll as usize)
+                .position(scroll as usize);
+            frame.render_stateful_widget(
+                ratatui::widgets::Scrollbar::new(
+                    ratatui::widgets::ScrollbarOrientation::VerticalRight,
+                )
+                .thumb_style(Style::new().fg(pal().accent))
+                .track_style(Style::new().fg(pal().faint)),
+                parts[0],
+                &mut state,
+            );
+        }
+    }
+    frame.render_widget(paragraph, parts[0]);
 
     let mut spans = Vec::new();
     let mut x = parts[1].x;

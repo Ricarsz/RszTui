@@ -14,6 +14,8 @@
 - 保存的风扇预设（原始 PWM）
 - 界面偏好（上次页面、主题、速率格式）
 
+写入采用「临时文件 + fsync + 原子替换」，不会因断电留下半截文件；替换前把旧版本保留为 `config.toml.bak`。若解析失败，原文件会被改名为 `config.toml.corrupt-<时间戳>`，随后用默认配置重建，并在终端提示备份路径。
+
 ## 外观与速率
 
 设置页（`8`）可直接点击，或按：
@@ -46,7 +48,7 @@ rate_style = "binary"  # binary / decimal / bits
 - 风扇曲线由 asusd 持久化在 `/etc/asusd/fan_curves.ron`。
 - 网络配置由 NetworkManager 持久化在 `/etc/NetworkManager/system-connections/`。
 
-**本工具不自动备份**。需要时手动：
+**asusd/NetworkManager 的硬件状态仍不自动备份**。需要时手动：
 
 ```bash
 sudo cp -a /etc/asusd /etc/asusd.bak
@@ -108,17 +110,18 @@ sudo rsztui net cache size 4096
 ## 安全说明
 
 - TUI 以 root 运行，只在本机终端使用。
-- Wi-Fi/热点密码不放进命令行参数，写入 `/etc/NetworkManager/system-connections/`（0600 root），再 `nmcli connection reload`。
+- 新建 Wi-Fi/热点时密码不放进命令行参数，写入 `/etc/NetworkManager/system-connections/`（0600 root），再 `nmcli connection reload`。
+- 修改已有 Wi-Fi 密码时通过 `nmcli connection modify` 传递，进程参数对 root 可见；改完立即重连。
 - 网络修改前二次确认；IP/网关/DNS 做基本格式校验。
 - 服务停止/重启有影响提示：NetworkManager 会断网，asusd 会失去 ASUS 控制。
+- 外部命令（nmcli/asusctl 等）默认 30 秒超时，超时会终止子进程并在状态栏报错。
 
 ## 已知限制
 
-- 已有同名 Wi-Fi 配置直接复用，暂不支持在工具内改密码；需先删除该连接再重连。
-- 网络只处理 IPv4，IPv6 由 NetworkManager 默认策略管理。
-- 热点固定连接 id 为 `rsztui-hotspot`，TUI 内 SSID 固定；CLI 可指定 SSID。
+- 网络只支持 IPv4 配置；IPv6 地址/网关/DNS 在详情页只读展示，由 NetworkManager 默认策略管理。
+- 热点固定连接 id 为 `rsztui-hotspot`，TUI 和 CLI 都可指定 SSID 与密码。
 - DoT 依赖 NetworkManager + systemd-resolved；DoH 不原生支持。
 - GPU 模式修改必须重启。
 - 风扇曲线要求温度严格递增；PWM 0–255。
-- 温度列表依赖 `hwmon` 标签，不同机型差异较大。
-- 不自动备份，写坏了需要手动恢复。
+- 温度、风扇转速依赖 `hwmon` 标签，不同机型差异较大。
+- `asusd`/NetworkManager 的硬件状态不自动备份，只自动备份本工具配置。
