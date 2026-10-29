@@ -3,6 +3,8 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
+use crate::gpu;
+
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub cpu_pct: f32,
@@ -15,18 +17,45 @@ pub struct Snapshot {
     pub tx_bps: f64,
     pub temps: Vec<(String, f32)>,
     pub max_temp: Option<f32>,
-    pub gpu_temp: Option<f32>,
     pub load1: f32,
     pub load5: f32,
     pub load15: f32,
     pub cpu_mhz: Option<f32>,
+    pub cpu_mhz_max: Option<f32>,
+    /// CPU 封装功耗（RAPL 能量计数差分，瓦）。
+    pub cpu_power_w: Option<f32>,
     pub swap_used: u64,
     pub swap_total: u64,
     pub fans: Vec<(String, u32)>,
+    pub gpus: Vec<gpu::Status>,
     pub gpu_load: Option<u8>,
     pub disk_used: u64,
     pub disk_total: u64,
     pub uptime: u64,
+    pub net_ifaces: Vec<NetIface>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NetIface {
+    pub name: String,
+    pub rx_bps: f64,
+    pub tx_bps: f64,
+    pub rx_total: u64,
+    pub tx_total: u64,
+    /// 链路速率（Mbps），无线网卡运行时可能为空。
+    pub speed_mbps: Option<u64>,
+    pub operstate: String,
+    pub physical: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct NetRaw {
+    name: String,
+    rx: u64,
+    tx: u64,
+    physical: bool,
+    operstate: String,
+    speed_mbps: Option<u64>,
 }
 
 #[derive(Default)]
@@ -35,6 +64,9 @@ pub struct Collector {
     prev_cores: Vec<(u64, u64)>,
     prev_net: Option<(u64, u64)>,
     prev_time: Option<Instant>,
+    prev_energy: Option<(u64, Instant)>,
+    prev_ifaces: Vec<(String, u64, u64)>,
+    gpus: Option<Vec<gpu::Gpu>>,
 }
 
 impl Collector {
@@ -81,34 +113,72 @@ impl Collector {
             snap.swap_total = mem.swap_total;
         }
 
-        snap.cpu_mhz = cpu_mhz();
+        let (mhz, mhz_max) = cpu_freqs();
+        snap.cpu_mhz = mhz;
+        snap.cpu_mhz_max = mhz_max;
+        snap.cpu_power_w = self.cpu_power(now);
         snap.fans = fan_speeds();
-        snap.gpu_load = gpu_load();
+        if self.gpus.is_none() {
+            self.gpus = Some(gpu::discover());
+        }
+        let gpus = gpu::sample(self.gpus.as_deref().unwrap_or(&[]));
+        snap.gpu_load = gpus.iter().filter_map(|status| status.stats.load).max();
         if let Some((used, total)) = disk_usage("/") {
             snap.disk_used = used;
             snap.disk_total = total;
         }
 
-        if let Some((rx, tx)) = net_bytes() {
-            if let (Some((prev_rx, prev_tx)), Some(prev)) = (self.prev_net, self.prev_time) {
-                let secs = now.duration_since(prev).as_secs_f64().max(0.001);
-                snap.rx_bps = rx.saturating_sub(prev_rx) as f64 / secs;
-                snap.tx_bps = tx.saturating_sub(prev_tx) as f64 / secs;
+        let raw = net_stats();
+        let secs = self
+            .prev_time
+            .map(|prev| now.duration_since(prev).as_secs_f64().max(0.001));
+        let mut rx_total = 0u64;
+        let mut tx_total = 0u64;
+        for iface in &raw {
+            let prev = self
+                .prev_ifaces
+                .iter()
+                .find(|(name, _, _)| *name == iface.name);
+            let (rx_bps, tx_bps) = match (prev, secs) {
+                (Some((_, prev_rx, prev_tx)), Some(secs)) => (
+                    iface.rx.saturating_sub(*prev_rx) as f64 / secs,
+                    iface.tx.saturating_sub(*prev_tx) as f64 / secs,
+                ),
+                _ => (0.0, 0.0),
+            };
+            if iface.physical {
+                rx_total += iface.rx;
+                tx_total += iface.tx;
             }
-            self.prev_net = Some((rx, tx));
+            if iface.physical || iface.rx + iface.tx > 0 {
+                snap.net_ifaces.push(NetIface {
+                    name: iface.name.clone(),
+                    rx_bps,
+                    tx_bps,
+                    rx_total: iface.rx,
+                    tx_total: iface.tx,
+                    speed_mbps: iface.speed_mbps,
+                    operstate: iface.operstate.clone(),
+                    physical: iface.physical,
+                });
+            }
         }
+        self.prev_ifaces = raw
+            .iter()
+            .map(|iface| (iface.name.clone(), iface.rx, iface.tx))
+            .collect();
+        if let (Some(prev), Some(secs)) = (self.prev_net, secs) {
+            let (prev_rx, prev_tx) = prev;
+            snap.rx_bps = rx_total.saturating_sub(prev_rx) as f64 / secs;
+            snap.tx_bps = tx_total.saturating_sub(prev_tx) as f64 / secs;
+        }
+        self.prev_net = Some((rx_total, tx_total));
         self.prev_time = Some(now);
 
-        let temps = temperatures();
-        snap.gpu_temp = temps
-            .iter()
-            .find(|(label, _)| {
-                let lower = label.to_ascii_lowercase();
-                lower.contains("gpu") || lower.contains("nvidia") || lower.contains("edge")
-            })
-            .map(|(_, value)| *value);
+        let temps = temperatures(&gpus);
         snap.max_temp = temps.iter().map(|(_, v)| *v).reduce(f32::max);
         snap.temps = temps;
+        snap.gpus = gpus;
 
         if let Ok(text) = fs::read_to_string("/proc/loadavg") {
             let mut fields = text.split_whitespace();
@@ -125,6 +195,34 @@ impl Collector {
 
         snap
     }
+
+    fn cpu_power(&mut self, now: Instant) -> Option<f32> {
+        let energy = rapl_energy()?;
+        let power = self.prev_energy.and_then(|(prev, at)| {
+            let secs = now.duration_since(at).as_secs_f64();
+            if secs < 0.05 {
+                return None;
+            }
+            let delta = if energy >= prev {
+                energy - prev
+            } else {
+                rapl_max_energy()?.saturating_sub(prev) + energy
+            };
+            Some((delta as f64 / 1_000_000.0 / secs) as f32)
+        });
+        self.prev_energy = Some((energy, now));
+        power
+    }
+}
+
+fn rapl_energy() -> Option<u64> {
+    let text = fs::read_to_string("/sys/class/powercap/intel-rapl:0/energy_uj").ok()?;
+    text.trim().parse().ok()
+}
+
+fn rapl_max_energy() -> Option<u64> {
+    let text = fs::read_to_string("/sys/class/powercap/intel-rapl:0/max_energy_range_uj").ok()?;
+    text.trim().parse().ok()
 }
 
 type CpuTime = (u64, u64);
@@ -199,20 +297,116 @@ fn mem_info() -> Option<MemInfo> {
     })
 }
 
-fn cpu_mhz() -> Option<f32> {
-    let text = fs::read_to_string("/proc/cpuinfo").ok()?;
+/// 每核当前频率（GHz 平均值、最大值）。优先 cpufreq（AMD P-State 下比
+/// `/proc/cpuinfo` 的估算值准确得多），读不到时退回 cpuinfo。
+fn cpu_freqs() -> (Option<f32>, Option<f32>) {
     let mut sum = 0.0f64;
+    let mut max = 0.0f64;
     let mut count = 0u32;
+    if let Ok(entries) = fs::read_dir("/sys/devices/system/cpu") {
+        for entry in entries.filter_map(|entry| entry.ok()) {
+            let name = entry.file_name();
+            let Some(index) = name.to_str().and_then(|name| name.strip_prefix("cpu")) else {
+                continue;
+            };
+            if index.is_empty() || !index.bytes().all(|byte| byte.is_ascii_digit()) {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(entry.path().join("cpufreq/scaling_cur_freq")) else {
+                continue;
+            };
+            let Ok(khz) = text.trim().parse::<f64>() else {
+                continue;
+            };
+            sum += khz;
+            max = max.max(khz);
+            count += 1;
+        }
+    }
+    if count > 0 {
+        return (
+            Some((sum / count as f64 / 1_000_000.0) as f32),
+            Some((max / 1_000_000.0) as f32),
+        );
+    }
+    let Ok(text) = fs::read_to_string("/proc/cpuinfo") else {
+        return (None, None);
+    };
     for line in text.lines() {
         if let Some(value) = line.strip_prefix("cpu MHz")
             && let Some(value) = value.split(':').nth(1)
             && let Ok(mhz) = value.trim().parse::<f64>()
         {
             sum += mhz;
+            max = max.max(mhz);
             count += 1;
         }
     }
-    (count > 0).then(|| (sum / count as f64 / 1000.0) as f32)
+    if count == 0 {
+        return (None, None);
+    }
+    (
+        Some((sum / count as f64 / 1000.0) as f32),
+        Some((max / 1000.0) as f32),
+    )
+}
+
+fn net_stats() -> Vec<NetRaw> {
+    let mut result = Vec::new();
+    let Ok(entries) = fs::read_dir("/sys/class/net") else {
+        return result;
+    };
+    for entry in entries.filter_map(|entry| entry.ok()) {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == "lo" {
+            continue;
+        }
+        let dir = entry.path();
+        let physical = dir.join("device").exists();
+        let operstate = fs::read_to_string(dir.join("operstate"))
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default();
+        if !physical && is_virtual_iface(&name) && operstate != "up" {
+            continue;
+        }
+        let stats = dir.join("statistics");
+        result.push(NetRaw {
+            name,
+            rx: read_u64(&stats.join("rx_bytes")).unwrap_or(0),
+            tx: read_u64(&stats.join("tx_bytes")).unwrap_or(0),
+            physical,
+            operstate,
+            speed_mbps: fs::read_to_string(dir.join("speed"))
+                .ok()
+                .and_then(|value| value.trim().parse::<i64>().ok())
+                .filter(|speed| *speed > 0)
+                .map(|speed| speed as u64),
+        });
+    }
+    // 物理网卡、已启用的排前面，其余按名字稳定排序，避免每秒跳动。
+    result.sort_by(|a, b| {
+        b.physical
+            .cmp(&a.physical)
+            .then_with(|| (b.operstate == "up").cmp(&(a.operstate == "up")))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    result
+}
+
+fn is_virtual_iface(name: &str) -> bool {
+    const PREFIXES: [&str; 10] = [
+        "veth",
+        "docker",
+        "br-",
+        "virbr",
+        "tun",
+        "tap",
+        "wg",
+        "tailscale",
+        "vnet",
+        "vmnet",
+    ];
+    PREFIXES.iter().any(|prefix| name.starts_with(prefix))
 }
 
 fn fan_speeds() -> Vec<(String, u32)> {
@@ -262,23 +456,6 @@ fn fan_speeds() -> Vec<(String, u32)> {
     result
 }
 
-fn gpu_load() -> Option<u8> {
-    let entries = fs::read_dir("/sys/class/drm").ok()?;
-    let mut load = None;
-    for entry in entries.filter_map(|e| e.ok()) {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with("card") || !name[4..].chars().all(|c| c.is_ascii_digit()) {
-            continue;
-        }
-        let path = entry.path().join("device/gpu_busy_percent");
-        if let Some(value) = read_u64(&path) {
-            let value = value.min(100) as u8;
-            load = Some(load.map_or(value, |v: u8| v.max(value)));
-        }
-    }
-    load
-}
-
 fn disk_usage(path: &str) -> Option<(u64, u64)> {
     let path = CString::new(path).ok()?;
     // SAFETY: statvfs 只读填充调用方提供的结构体，指针来自有效的 CString。
@@ -292,34 +469,16 @@ fn disk_usage(path: &str) -> Option<(u64, u64)> {
     Some((total.saturating_sub(free), total))
 }
 
-fn net_bytes() -> Option<(u64, u64)> {
-    let entries = fs::read_dir("/sys/class/net").ok()?;
-    let mut rx_total = 0u64;
-    let mut tx_total = 0u64;
-    for entry in entries.filter_map(|e| e.ok()) {
-        let name = entry.file_name();
-        if name == "lo" {
-            continue;
-        }
-        // 只统计物理网卡，避免 veth/bridge 的流量被重复累加。
-        if !entry.path().join("device").exists() {
-            continue;
-        }
-        let base = entry.path().join("statistics");
-        rx_total += read_u64(&base.join("rx_bytes")).unwrap_or(0);
-        tx_total += read_u64(&base.join("tx_bytes")).unwrap_or(0);
-    }
-    Some((rx_total, tx_total))
-}
-
 fn read_u64(path: &Path) -> Option<u64> {
     fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
-fn temperatures() -> Vec<(String, f32)> {
-    let mut result: Vec<(String, f32)> = Vec::new();
+/// 温度条目：优先级只决定显示顺序（CPU → GPU → 磁盘 → 内存 → ACPI），
+/// 不再单纯按数值排序，避免每个采样周期列表整体跳动。
+fn temperatures(gpus: &[gpu::Status]) -> Vec<(String, f32)> {
+    let mut rated: Vec<(u8, String, f32)> = Vec::new();
     let Ok(entries) = fs::read_dir("/sys/class/hwmon") else {
-        return result;
+        return Vec::new();
     };
 
     for entry in entries.filter_map(|e| e.ok()) {
@@ -327,10 +486,14 @@ fn temperatures() -> Vec<(String, f32)> {
         let chip = fs::read_to_string(dir.join("name"))
             .map(|v| v.trim().to_string())
             .unwrap_or_else(|_| "sensor".into());
+        // GPU 温度由 gpu 模块按设备归集，避免把核显/独显的传感器混在一起。
+        if chip == "amdgpu" || chip == "nvidia" {
+            continue;
+        }
         let Ok(files) = fs::read_dir(&dir) else {
             continue;
         };
-        let mut sensors: Vec<(String, f32)> = Vec::new();
+        let mut sensors: Vec<(String, String, f32)> = Vec::new();
         for file in files.filter_map(|e| e.ok()) {
             let name = file.file_name().to_string_lossy().into_owned();
             let Some(stem) = name.strip_suffix("_input") else {
@@ -351,34 +514,74 @@ fn temperatures() -> Vec<(String, f32)> {
             }
             let label = fs::read_to_string(dir.join(format!("{stem}_label")))
                 .map(|v| v.trim().to_string())
-                .unwrap_or_else(|_| chip.clone());
-            sensors.push((label, celsius));
+                .unwrap_or_default();
+            sensors.push((stem.to_string(), label, celsius));
         }
         if sensors.is_empty() {
             continue;
         }
 
-        // 一块 NVMe 通常有 Composite / Sensor 1 / Sensor 2 三个读数。
-        // 仪表盘只保留该盘的最高温度，避免一块盘占满整个列表。
         if chip == "nvme" {
-            if let Some((_, celsius)) = sensors.iter().max_by(|a, b| a.1.total_cmp(&b.1)) {
-                result.push((nvme_label(&dir), *celsius));
+            // Composite（temp1）是 Mission Center 等工具显示的那一路；
+            // Sensor 1/2 是闪存颗粒，个别情况下会高出 10–15°C。
+            let composite = sensors.iter().find(|(stem, ..)| stem == "temp1");
+            let fallback = sensors.iter().max_by(|a, b| a.2.total_cmp(&b.2));
+            if let Some((_, _, celsius)) = composite.or(fallback) {
+                push_temp(&mut rated, 3, nvme_label(&dir), *celsius);
             }
             continue;
         }
 
-        for (sensor, celsius) in sensors {
-            let label = temperature_label(&dir, &chip, &sensor);
-            if result.iter().any(|(existing, _)| *existing == label) {
-                continue;
-            }
-            result.push((label, celsius));
+        for (_stem, sensor, celsius) in sensors {
+            let (rank, label) = match chip.as_str() {
+                "k10temp" => (
+                    0,
+                    if sensor.is_empty() {
+                        "CPU".to_string()
+                    } else {
+                        format!("CPU {sensor}")
+                    },
+                ),
+                "spd5118" => (4, dimm_label(&dir)),
+                "acpitz" => (5, "ACPI 温区".to_string()),
+                _ => (6, temperature_label(&chip, &sensor)),
+            };
+            push_temp(&mut rated, rank, label, celsius);
         }
     }
 
-    result.sort_by(|a, b| b.1.total_cmp(&a.1));
-    result.truncate(8);
-    result
+    for status in gpus {
+        let name = status.gpu.short.clone();
+        let rank = match status.gpu.vendor {
+            gpu::Vendor::Nvidia => 1,
+            _ => 2,
+        };
+        if let Some(celsius) = status.stats.temp {
+            push_temp(&mut rated, rank, name.clone(), celsius);
+        }
+        if let Some(celsius) = status.stats.hotspot
+            && status.stats.temp != Some(celsius)
+        {
+            push_temp(&mut rated, rank, format!("{name} 热点"), celsius);
+        }
+        if let Some(celsius) = status.stats.mem_temp {
+            push_temp(&mut rated, rank, format!("{name} 显存"), celsius);
+        }
+    }
+
+    rated.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    rated.truncate(10);
+    rated
+        .into_iter()
+        .map(|(_, label, value)| (label, value))
+        .collect()
+}
+
+fn push_temp(list: &mut Vec<(u8, String, f32)>, rank: u8, label: String, celsius: f32) {
+    if list.iter().any(|(_, existing, _)| *existing == label) {
+        return;
+    }
+    list.push((rank, label, celsius));
 }
 
 fn nvme_label(dir: &Path) -> String {
@@ -392,14 +595,11 @@ fn nvme_label(dir: &Path) -> String {
     }
 }
 
-fn temperature_label(dir: &Path, chip: &str, sensor: &str) -> String {
-    match chip {
-        "k10temp" => format!("CPU ({sensor})"),
-        "amdgpu" => "核显 (amdgpu)".into(),
-        "spd5118" => dimm_label(dir),
-        "acpitz" => "ACPI 温区".into(),
-        _ if sensor.is_empty() || sensor == chip => chip.into(),
-        _ => format!("{sensor} ({chip})"),
+fn temperature_label(chip: &str, sensor: &str) -> String {
+    if sensor.is_empty() || sensor == chip {
+        chip.into()
+    } else {
+        format!("{sensor} ({chip})")
     }
 }
 
@@ -417,5 +617,17 @@ fn dimm_label(dir: &Path) -> String {
         "内存 2 (SPD)".into()
     } else {
         "内存 (SPD)".into()
+    }
+}
+
+#[cfg(test)]
+mod net_tests {
+    #[test]
+    fn classifies_virtual_interfaces() {
+        assert!(super::is_virtual_iface("veth1234"));
+        assert!(super::is_virtual_iface("br-9a1b"));
+        assert!(super::is_virtual_iface("tun0"));
+        assert!(!super::is_virtual_iface("enp3s0"));
+        assert!(!super::is_virtual_iface("wlan0"));
     }
 }

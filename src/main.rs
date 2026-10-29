@@ -3,6 +3,7 @@ mod asus;
 mod cli;
 mod config;
 mod deps;
+mod gpu;
 mod hw;
 mod nm;
 mod services;

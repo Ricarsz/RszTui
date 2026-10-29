@@ -31,18 +31,20 @@ pub enum Tab {
     Fan,
     Lighting,
     Network,
+    Gpu,
     Services,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 9] = [
         Tab::Dashboard,
         Tab::Performance,
         Tab::Battery,
         Tab::Fan,
         Tab::Lighting,
         Tab::Network,
+        Tab::Gpu,
         Tab::Services,
         Tab::Settings,
     ];
@@ -55,6 +57,7 @@ impl Tab {
             Tab::Fan => "风扇",
             Tab::Lighting => "灯光",
             Tab::Network => "网络",
+            Tab::Gpu => "显卡",
             Tab::Services => "服务",
             Tab::Settings => "设置",
         }
@@ -399,8 +402,11 @@ pub struct App {
     pub mouse_targets: RefCell<Vec<MouseTarget>>,
     pub quit: bool,
     last_slow: Instant,
-    last_tick: Instant,
-    collector: Collector,
+    snap_rx: Receiver<Snapshot>,
+    pub snap_loading: bool,
+    hw_rx: Receiver<hw::HardwareInfo>,
+    core_initialized: bool,
+    pending_tab_refresh: bool,
 }
 
 pub fn run(cfg: Config, report: deps::Report) -> Result<()> {
@@ -429,11 +435,30 @@ impl App {
     pub fn new(cfg: Config, report: deps::Report) -> Self {
         let (net_tx, net_rx) = mpsc::channel();
         let (core_tx, core_rx) = mpsc::channel();
+        let (snap_tx, snap_rx) = mpsc::channel();
+        let (hw_tx, hw_rx) = mpsc::channel();
+
+        // 硬件信息与实时采样都放到后台，先让界面出来。
+        std::thread::spawn(move || {
+            let _ = hw_tx.send(hw::collect());
+        });
+        {
+            let tx = snap_tx;
+            std::thread::spawn(move || {
+                let mut collector = Collector::default();
+                loop {
+                    if tx.send(collector.sample()).is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            });
+        }
         let tab = Tab::from_index(cfg.ui.last_tab);
         let mut app = Self {
             cfg,
             deps: report,
-            hw: hw::collect(),
+            hw: hw::HardwareInfo::default(),
             tab,
             profile: None,
             battery: BatteryInfo::default(),
@@ -489,7 +514,7 @@ impl App {
             tx_hist: VecDeque::with_capacity(HISTORY),
             limit_edit: 80,
             limit_dirty: false,
-            status: "就绪".into(),
+            status: "正在读取系统信息…".into(),
             status_err: false,
             modal: None,
             modal_scroll: Cell::new(0),
@@ -497,27 +522,14 @@ impl App {
             mouse_targets: RefCell::new(Vec::new()),
             quit: false,
             last_slow: Instant::now(),
-            last_tick: Instant::now(),
-            collector: Collector::default(),
+            snap_rx,
+            snap_loading: true,
+            hw_rx,
+            core_initialized: false,
+            pending_tab_refresh: true,
         };
-
-        app.refresh_fast();
-        app.refresh_core_sync();
-        app.refresh_current_tab();
+        app.request_core();
         app.request_net_snapshot();
-        app.tuning = asus::profile_tuning().unwrap_or(false);
-        if let Some(profile) = app.profile {
-            app.profile_sel = Profile::ALL
-                .iter()
-                .position(|p| *p == profile.active)
-                .unwrap_or(0);
-        }
-        if let Some(mode) = app.gpu_mode {
-            app.gpu_sel = GpuMode::ALL.iter().position(|m| *m == mode).unwrap_or(1);
-        }
-        if let Some(limit) = app.battery.limit {
-            app.limit_edit = limit;
-        }
         if app.deps.has_warnings() {
             let body = app.deps.summary_text();
             app.show_message("依赖检查", body);
@@ -574,10 +586,10 @@ impl App {
             if self.poll_core() {
                 dirty = true;
             }
-
-            if self.last_tick.elapsed() >= Duration::from_secs(1) {
-                self.refresh_fast();
-                self.last_tick = Instant::now();
+            if self.poll_hw() {
+                dirty = true;
+            }
+            if self.poll_snap() {
                 dirty = true;
             }
 
@@ -642,7 +654,7 @@ impl App {
             }
             KeyCode::Tab => self.switch_tab(Tab::next(self.tab)),
             KeyCode::BackTab => self.switch_tab(Tab::prev(self.tab)),
-            KeyCode::Char(c @ '1'..='8') => {
+            KeyCode::Char(c @ '1'..='9') => {
                 let index = c as usize - '1' as usize;
                 self.switch_tab(Tab::from_index(index));
             }
@@ -2361,8 +2373,33 @@ impl App {
         Ok(())
     }
 
-    pub fn refresh_fast(&mut self) {
-        let snap = self.collector.sample();
+    fn poll_hw(&mut self) -> bool {
+        match self.hw_rx.try_recv() {
+            Ok(info) => {
+                self.hw = info;
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// 后台快照里的营销型号优先，硬件枚举（lspci）名字兜底。
+    pub fn gpu_names(&self) -> Vec<String> {
+        if self.snap.gpus.is_empty() {
+            self.hw.gpus.clone()
+        } else {
+            self.snap.gpus.iter().map(|g| g.gpu.name.clone()).collect()
+        }
+    }
+
+    fn poll_snap(&mut self) -> bool {
+        let mut latest = None;
+        while let Ok(snap) = self.snap_rx.try_recv() {
+            latest = Some(snap);
+        }
+        let Some(snap) = latest else {
+            return false;
+        };
         push_hist(&mut self.cpu_hist, snap.cpu_pct as u64);
         let mem_pct = if snap.mem_total > 0 {
             (snap.mem_used as f64 / snap.mem_total as f64 * 100.0) as u64
@@ -2373,6 +2410,17 @@ impl App {
         push_hist(&mut self.rx_hist, snap.rx_bps as u64);
         push_hist(&mut self.tx_hist, snap.tx_bps as u64);
         self.snap = snap;
+        if self.snap_loading {
+            self.snap_loading = false;
+            if self.status == "正在读取系统信息…" {
+                self.status = "就绪".into();
+            }
+        }
+        if self.pending_tab_refresh {
+            self.pending_tab_refresh = false;
+            self.refresh_current_tab();
+        }
+        true
     }
 
     pub fn refresh_slow(&mut self) {
@@ -2437,6 +2485,22 @@ impl App {
                         Err(err) => errors.push(format!("功耗：{err}")),
                     }
                     self.tuning = snapshot.tuning;
+                    if !self.core_initialized {
+                        self.core_initialized = true;
+                        if let Some(profile) = self.profile {
+                            self.profile_sel = Profile::ALL
+                                .iter()
+                                .position(|p| *p == profile.active)
+                                .unwrap_or(0);
+                        }
+                        if let Some(mode) = self.gpu_mode {
+                            self.gpu_sel =
+                                GpuMode::ALL.iter().position(|m| *m == mode).unwrap_or(1);
+                        }
+                        if let Some(limit) = self.battery.limit {
+                            self.limit_edit = limit;
+                        }
+                    }
                     if !errors.is_empty() {
                         self.status = format!("刷新失败：{}", errors.join("；"));
                         self.status_err = true;
@@ -2452,46 +2516,6 @@ impl App {
             self.request_core();
         }
         updated
-    }
-
-    fn refresh_core_sync(&mut self) {
-        let mut errors = Vec::new();
-
-        match asus::profile_get() {
-            Ok(profile) => self.profile = Some(profile),
-            Err(err) => errors.push(format!("性能模式：{err}")),
-        }
-
-        match asus::battery_info() {
-            Ok(info) => {
-                if !self.limit_dirty
-                    && let Some(limit) = info.limit
-                {
-                    self.limit_edit = limit;
-                }
-                self.battery = info;
-            }
-            Err(err) => errors.push(format!("电池：{err}")),
-        }
-
-        match asus::armoury() {
-            Ok(attrs) => {
-                self.gpu_mode = asus::gpu_mode(&attrs);
-                if !self.power_dirty {
-                    self.power = asus::power_fields(&attrs);
-                    self.power_sel = self.power_sel.min(self.power.len().saturating_sub(1));
-                }
-                self.attrs = attrs;
-            }
-            Err(err) => errors.push(format!("功耗：{err}")),
-        }
-
-        self.tuning = asus::profile_tuning().unwrap_or(false);
-
-        if !errors.is_empty() {
-            self.status = format!("刷新失败：{}", errors.join("；"));
-            self.status_err = true;
-        }
     }
 
     fn refresh_current_tab(&mut self) {
@@ -2533,7 +2557,7 @@ impl App {
             Tab::Settings => {
                 self.tuning = asus::profile_tuning().unwrap_or(false);
             }
-            Tab::Dashboard | Tab::Performance | Tab::Battery => {}
+            Tab::Dashboard | Tab::Performance | Tab::Battery | Tab::Gpu => {}
         }
     }
 }
@@ -2618,7 +2642,7 @@ fn ip_form_summary(form: &IpForm) -> String {
 fn help_text() -> String {
     [
         "全局",
-        "  Tab / Shift+Tab  切换页面     1-8  直接跳转",
+        "  Tab / Shift+Tab  切换页面     1-9  直接跳转",
         "  鼠标：点击导航/列表/操作栏，双击执行，滚轮选择",
         "  r 刷新   ? 帮助   q 退出      Ctrl+C 立即退出",
         "",
@@ -2643,6 +2667,9 @@ fn help_text() -> String {
         "服务",
         "  j/k 选择   s 启动   t 停止   R 重启",
         "  e 启用自启   d 禁用自启   E 启用并启动   D 禁用并停止",
+        "",
+        "显卡",
+        "  只读监控：核心/热点/显存温度、负载、显存、功耗与 PCIe 链路",
         "",
         "网络",
         "  v 切换 连接/Wi-Fi/VPN   j/k 选择   Enter 连接或编辑",

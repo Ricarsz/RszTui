@@ -115,7 +115,7 @@ sudo rsztui service disable asus-shutdown --now
 | 键 | 作用 |
 |---|---|
 | `Tab` / `Shift+Tab` | 切换页面 |
-| `1`–`8` | 直接跳页 |
+| `1`–`9` | 直接跳页 |
 | `r` | 刷新 |
 | `?` | 帮助 |
 | `q` | 退出（有未应用更改时会列出并确认） |
@@ -124,6 +124,10 @@ sudo rsztui service disable asus-shutdown --now
 | `PageUp` / `PageDown` | 列表翻 5 项 |
 
 鼠标：点击导航/列表/操作栏/性能页各面板，点击列表行选中，双击条目执行默认操作（切换性能模式/应用预设/进入连接/应用 GPU/应用颜色），滚轮上下移动当前列表。弹窗底部有可点的确认/取消按钮；性能/电池/服务/灯光/风扇页底部有可点操作栏。小键盘：NumLock 关闭时直接发方向键；NumLock 开启且终端支持 Kitty 键盘协议时，`8/2/4/6/5` 映射为上/下/左/右/确认。长文本弹窗（帮助/Ping/DNS）用 `j/k` 或 `PageUp/PageDown` 滚动，`Enter`/`Esc` 关闭。
+
+### 显卡
+
+只读监控页，按 PCI 设备分别展示集显与独显：型号、驱动版本、PCIe 链路、核心/热点/显存温度、负载、显存占用、功耗/频率与 runtime 状态。NVIDIA 卡用 `nvidia-smi` 读取（runtime 为 `suspended` 时不调用，避免唤醒），AMD/Intel 走 DRM + hwmon。该页没有可修改项。
 
 ### 性能
 

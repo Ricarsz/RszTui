@@ -10,6 +10,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{AURA_COLORS, App, IpForm, Modal, MouseAction, MouseTarget, NetView, Tab};
 use crate::asus::{self, GpuMode, Profile};
+use crate::gpu;
 use crate::nm;
 use crate::util;
 
@@ -267,6 +268,18 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled("电池 ", Style::new().fg(pal().dim)),
         Span::styled(battery, Style::new().fg(battery_color(app))),
     ];
+    if let Some(temp) = app
+        .snap
+        .gpus
+        .iter()
+        .find(|status| status.gpu.vendor == gpu::Vendor::Nvidia)
+        .and_then(|status| status.stats.temp)
+    {
+        status.insert(
+            5,
+            Span::styled(format!(" {temp:.0}°C"), Style::new().fg(temp_color(temp))),
+        );
+    }
     if inner.width >= 84 {
         status.push(Span::styled(
             format!("  {limit}"),
@@ -463,6 +476,7 @@ fn draw_body(frame: &mut Frame, area: Rect, app: &App) {
         Tab::Fan => draw_fan(frame, area, app),
         Tab::Lighting => draw_lighting(frame, area, app),
         Tab::Network => draw_network(frame, area, app),
+        Tab::Gpu => draw_gpu(frame, area, &app.snap.gpus, app.snap_loading),
         Tab::Services => draw_services(frame, area, app),
         Tab::Settings => draw_settings(frame, area, app),
     }
@@ -579,7 +593,11 @@ fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_cpu(frame: &mut Frame, area: Rect, app: &App) {
-    let block = panel(" CPU ");
+    let title = match app.snap.cpu_mhz {
+        Some(mhz) => format!(" CPU {mhz:.2} GHz "),
+        None => " CPU ".to_string(),
+    };
+    let block = panel(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let compact = inner.width < 48;
@@ -624,12 +642,20 @@ fn draw_cpu(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(pal().dim),
         ),
     ];
-    if inner.width >= 38
-        && let Some(mhz) = app.snap.cpu_mhz
+    if inner.width >= 56
+        && let Some(mhz) = app.snap.cpu_mhz_max
     {
         summary.push(Span::styled(
-            format!("  {mhz:.2} GHz"),
+            format!("  峰 {mhz:.2} GHz"),
             Style::new().fg(pal().text),
+        ));
+    }
+    if inner.width >= 40
+        && let Some(watts) = app.snap.cpu_power_w
+    {
+        summary.push(Span::styled(
+            format!("  功耗 {watts:.1} W"),
+            Style::new().fg(pal().warn),
         ));
     }
     if inner.width >= 56 {
@@ -750,8 +776,33 @@ fn draw_memory(frame: &mut Frame, area: Rect, app: &App) {
     draw_graph_inner(frame, rows[2], &app.mem_hist, 100, pal().chart);
 }
 
+fn link_label(mbps: u64) -> String {
+    if mbps >= 1000 {
+        let value = mbps as f64 / 1000.0;
+        format!("{value:.1} Gb/s")
+    } else {
+        format!("{mbps} Mb/s")
+    }
+}
+
 fn draw_network_graph(frame: &mut Frame, area: Rect, app: &App) {
-    let block = panel(" 网络 ");
+    let active = app
+        .snap
+        .net_ifaces
+        .iter()
+        .find(|iface| iface.physical && iface.operstate == "up");
+    let title = match active {
+        Some(iface) => format!(
+            " 网络 {} {} ",
+            iface.name,
+            iface
+                .speed_mbps
+                .map(link_label)
+                .unwrap_or_else(|| "-".to_string())
+        ),
+        None => " 网络 ".to_string(),
+    };
+    let block = panel(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -812,7 +863,11 @@ fn draw_temps(frame: &mut Frame, area: Rect, app: &App) {
     if app.snap.temps.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                "  没有可读的温度传感器",
+                if app.snap_loading {
+                    "  正在读取温度传感器…"
+                } else {
+                    "  没有可读的温度传感器"
+                },
                 Style::new().fg(pal().dim),
             )),
             inner,
@@ -1139,7 +1194,7 @@ fn draw_asus_panel(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(
             format!(
                 "{}{gpu_load}",
-                util::truncate(&app.hw.gpus.join(" / "), width.saturating_sub(12))
+                util::truncate(&app.gpu_names().join(" / "), width.saturating_sub(12))
             ),
             Style::new().fg(pal().text),
         ),
@@ -1524,6 +1579,182 @@ fn draw_power_fields(frame: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
         inner,
     );
+}
+
+fn draw_gpu(frame: &mut Frame, area: Rect, gpus: &[gpu::Status], loading: bool) {
+    if gpus.is_empty() {
+        let block = panel(" 显卡 ");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                if loading {
+                    "  正在检测显卡…"
+                } else {
+                    "  没有检测到 GPU（/sys/class/drm 为空）"
+                },
+                Style::new().fg(pal().dim),
+            )),
+            inner,
+        );
+        return;
+    }
+    let count = gpus.len() as u32;
+    let constraints: Vec<Constraint> = (0..count).map(|_| Constraint::Ratio(1, count)).collect();
+    let rows = Layout::vertical(constraints).spacing(1).split(area);
+    for (index, status) in gpus.iter().enumerate() {
+        draw_gpu_card(frame, rows[index], status);
+    }
+}
+
+fn draw_gpu_card(frame: &mut Frame, area: Rect, status: &gpu::Status) {
+    let accent = gpu_vendor_color(status.gpu.vendor);
+    let block = panel(Line::from(vec![
+        Span::styled(
+            format!(" {} ", status.gpu.vendor.label()),
+            Style::new().fg(Color::Black).bg(accent).bold(),
+        ),
+        Span::raw(" "),
+        Span::styled(status.gpu.name.clone(), Style::new().fg(pal().text).bold()),
+    ]));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width < 24 || inner.height == 0 {
+        return;
+    }
+
+    let label_w = 8usize;
+    let bar_w = (inner.width as usize)
+        .saturating_sub(label_w + 24)
+        .clamp(4, 20);
+    let dim = |text: String| Span::styled(text, Style::new().fg(pal().dim));
+    let mut lines: Vec<Line> = Vec::new();
+
+    let driver = if status.gpu.driver.is_empty() {
+        "-".to_string()
+    } else {
+        status.gpu.driver.clone()
+    };
+    let mut head = vec![kv_label("驱动", label_w)];
+    head.push(Span::styled(driver, Style::new().fg(pal().text)));
+    if !status.stats.driver_version.is_empty() {
+        head.push(dim(format!(" {}", status.stats.driver_version)));
+    }
+    if !status.stats.pcie.is_empty() {
+        head.push(dim(format!("   {}", status.stats.pcie)));
+    }
+    lines.push(Line::from(head));
+
+    let mut temp_row = vec![kv_label("温度", label_w)];
+    match status.stats.temp {
+        Some(value) => temp_row.push(Span::styled(
+            format!("{value:.1}°C"),
+            Style::new().fg(temp_color(value)).bold(),
+        )),
+        None => temp_row.push(Span::styled("-", Style::new().fg(pal().dim))),
+    }
+    if let Some(value) = status.stats.hotspot {
+        temp_row.push(dim(format!("   热点 {value:.1}°C")));
+    }
+    if let Some(value) = status.stats.mem_temp {
+        temp_row.push(dim(format!("   显存 {value:.1}°C")));
+    }
+    lines.push(Line::from(temp_row));
+
+    if let Some(load) = status.stats.load {
+        lines.push(Line::from(vec![
+            kv_label("负载", label_w),
+            Span::styled(
+                bar_text(load as f64 / 100.0, bar_w),
+                Style::new().fg(load_color(load as f32)),
+            ),
+            Span::styled(format!(" {load:>3}%"), Style::new().fg(pal().text)),
+        ]));
+    }
+
+    if let Some(total) = status.stats.mem_total {
+        let used = status.stats.mem_used.unwrap_or(0);
+        let ratio = if total > 0 {
+            used as f64 / total as f64
+        } else {
+            0.0
+        };
+        lines.push(Line::from(vec![
+            kv_label("显存", label_w),
+            Span::styled(bar_text(ratio, bar_w), Style::new().fg(pal().chart)),
+            Span::styled(
+                format!(
+                    " {} / {}",
+                    util::human_bytes(used as f64),
+                    util::human_bytes(total as f64)
+                ),
+                Style::new().fg(pal().text),
+            ),
+        ]));
+    }
+
+    if let Some(shared) = status.stats.shared_used {
+        lines.push(Line::from(vec![
+            kv_label("共享显存", label_w),
+            Span::styled(
+                util::human_bytes(shared as f64),
+                Style::new().fg(pal().text),
+            ),
+            dim("   (GTT)".to_string()),
+        ]));
+    }
+
+    let mut power_row = vec![kv_label("功耗", label_w)];
+    power_row.push(Span::styled(
+        status
+            .stats
+            .power
+            .map(|value| format!("{value:.1} W"))
+            .unwrap_or_else(|| "-".to_string()),
+        Style::new().fg(pal().text),
+    ));
+    if let Some(clock) = status.stats.clock_mhz {
+        power_row.push(dim(format!("   {clock} MHz")));
+    }
+    lines.push(Line::from(power_row));
+
+    let (runtime, runtime_color) = runtime_zh(&status.stats.runtime);
+    lines.push(Line::from(vec![
+        kv_label("状态", label_w),
+        Span::styled(runtime, Style::new().fg(runtime_color)),
+        dim(format!("   {}", status.gpu.pci)),
+    ]));
+
+    let lines: Vec<Line> = lines.into_iter().take(inner.height as usize).collect();
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
+fn kv_label(text: &str, width: usize) -> Span<'static> {
+    let pad = width.saturating_sub(UnicodeWidthStr::width(text));
+    Span::styled(
+        format!("  {text}{}", " ".repeat(pad)),
+        Style::new().fg(pal().dim),
+    )
+}
+
+fn gpu_vendor_color(vendor: gpu::Vendor) -> Color {
+    match vendor {
+        gpu::Vendor::Nvidia => Color::Rgb(118, 185, 0),
+        gpu::Vendor::Amd => Color::Rgb(230, 90, 80),
+        gpu::Vendor::Intel => Color::Rgb(80, 160, 230),
+        gpu::Vendor::Other => pal().accent,
+    }
+}
+
+fn runtime_zh(runtime: &str) -> (String, Color) {
+    match runtime {
+        "active" => ("活动".into(), pal().good),
+        "suspended" => ("休眠（未唤醒）".into(), pal().warn),
+        "suspending" => ("正在休眠".into(), pal().warn),
+        "resuming" => ("正在唤醒".into(), pal().warn),
+        "" => ("未知".into(), pal().dim),
+        other => (other.to_string(), pal().dim),
+    }
 }
 
 fn draw_battery(frame: &mut Frame, area: Rect, app: &App) {
@@ -2530,6 +2761,52 @@ fn draw_network(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(block, area);
 
     let rows = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(inner);
+    let totals = app
+        .snap
+        .net_ifaces
+        .iter()
+        .filter(|iface| iface.physical)
+        .fold((0u64, 0u64), |(rx, tx), iface| {
+            (rx + iface.rx_total, tx + iface.tx_total)
+        });
+    let mut ifaces: Vec<Span> = app
+        .snap
+        .net_ifaces
+        .iter()
+        .filter(|iface| iface.physical)
+        .take(2)
+        .flat_map(|iface| {
+            vec![
+                Span::styled(
+                    format!(
+                        "  {} {}  ",
+                        iface.name,
+                        iface
+                            .speed_mbps
+                            .map(link_label)
+                            .unwrap_or_else(|| iface.operstate.clone())
+                    ),
+                    Style::new().fg(pal().text),
+                ),
+                Span::styled(
+                    format!(
+                        "↓ {}  ↑ {}",
+                        util::human_rate_with(iface.rx_bps, rate_style(app)),
+                        util::human_rate_with(iface.tx_bps, rate_style(app))
+                    ),
+                    Style::new().fg(pal().dim),
+                ),
+            ]
+        })
+        .collect();
+    ifaces.push(Span::styled(
+        format!(
+            "  累计 ↓ {}  ↑ {}",
+            util::human_bytes(totals.0 as f64),
+            util::human_bytes(totals.1 as f64)
+        ),
+        Style::new().fg(pal().dim),
+    ));
     let header = Line::from(vec![
         Span::styled(" Wi-Fi ", Style::new().fg(pal().dim)),
         Span::styled(
@@ -2560,7 +2837,11 @@ fn draw_network(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw("")
         },
     ]);
-    frame.render_widget(Paragraph::new(header), rows[0]);
+    let iface_line = Line::from(ifaces);
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![header, iface_line])).style(Style::new()),
+        rows[0],
+    );
 
     let cols = Layout::horizontal([Constraint::Percentage(56), Constraint::Percentage(44)])
         .spacing(1)
@@ -3431,7 +3712,7 @@ fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled("  显卡      ", Style::new().fg(pal().dim)),
             Span::styled(
-                util::truncate(&app.hw.gpus.join(" / "), 58),
+                util::truncate(&app.gpu_names().join(" / "), 58),
                 Style::new().fg(pal().text),
             ),
         ]),
@@ -3577,8 +3858,9 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Tab::Fan => " i/I 编辑曲线  j/k 预设  p 应用  s 保存  e 启用  ? 帮助",
         Tab::Lighting => " b 亮度  e/E 灯效  c 颜色  S 静态色  ? 帮助",
         Tab::Network => " v 视图  j/k 选择  Enter 编辑  u/d 启停  p Ping  n DNS  c 缓存",
+        Tab::Gpu => " 只读监控  r 刷新  ? 帮助  q 退出",
         Tab::Services => " j/k 选择  s 启动  t 停止  R 重启  e/d 自启  E/D 立即  ? 帮助",
-        _ => " Tab 切换  1-8 跳转  r 刷新  ? 帮助  q 退出",
+        _ => " Tab 切换  1-9 跳转  r 刷新  ? 帮助  q 退出",
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -3802,5 +4084,88 @@ fn temp_color(value: f32) -> Color {
         pal().warn
     } else {
         pal().good
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn labels_link_speed() {
+        assert_eq!(super::link_label(1000), "1.0 Gb/s");
+        assert_eq!(super::link_label(2500), "2.5 Gb/s");
+        assert_eq!(super::link_label(100), "100 Mb/s");
+    }
+
+    fn status(vendor: gpu::Vendor, name: &str) -> gpu::Status {
+        gpu::Status {
+            gpu: gpu::Gpu {
+                vendor,
+                name: name.to_string(),
+                short: name.to_string(),
+                driver: "nvidia".into(),
+                pci: "0000:01:00.0".into(),
+                card: "card0".into(),
+                hwmon: None,
+            },
+            stats: gpu::Stats {
+                temp: Some(38.0),
+                hotspot: Some(42.5),
+                load: Some(12),
+                mem_used: Some(2_097_152),
+                mem_total: Some(8_589_934_592),
+                power: Some(2.19),
+                clock_mhz: Some(210),
+                pcie: "PCIe 4.0 x8".into(),
+                driver_version: "615.78.08".into(),
+                runtime: "active".into(),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn dump(gpus: &[gpu::Status], width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| draw_gpu(frame, frame.area(), gpus, false))
+            .unwrap();
+        let mut text = String::new();
+        let mut skip_continuation = false;
+        for cell in terminal.backend().buffer().content() {
+            if skip_continuation {
+                skip_continuation = false;
+                continue;
+            }
+            let symbol = cell.symbol();
+            text.push_str(symbol);
+            skip_continuation = UnicodeWidthStr::width(symbol) > 1;
+        }
+        text
+    }
+
+    #[test]
+    fn renders_gpu_cards_at_common_sizes() {
+        let gpus = [
+            status(gpu::Vendor::Nvidia, "RTX 4060"),
+            status(gpu::Vendor::Amd, "Radeon 780M"),
+        ];
+        for (width, height) in [(120, 30), (90, 24), (60, 16), (40, 10), (30, 8)] {
+            dump(&gpus, width, height);
+        }
+        let text = dump(&gpus, 120, 30);
+        assert!(text.contains("RTX 4060"));
+        assert!(text.contains("Radeon 780M"));
+        assert!(text.contains("615.78.08"));
+        assert!(text.contains("PCIe 4.0 x8"));
+        assert!(text.contains("38.0°C"));
+    }
+
+    #[test]
+    fn explains_missing_gpus() {
+        let text = dump(&[], 60, 12);
+        assert!(text.contains("没有检测到 GPU"), "dump={text:?}");
     }
 }

@@ -6,3 +6,5 @@ packaging/aur/pkg/
 packaging/aur/*.pkg.tar.zst
 
 packaging/aur/*.tar.gz
+
+/dist

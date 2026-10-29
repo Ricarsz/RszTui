@@ -126,7 +126,7 @@ fn gpu_names() -> Vec<String> {
     names
 }
 
-fn clean_gpu(model: &str) -> String {
+pub(crate) fn clean_gpu(model: &str) -> String {
     let model = model.split(" (rev ").next().unwrap_or(model).trim();
     let model = model
         .replace("NVIDIA Corporation ", "")
