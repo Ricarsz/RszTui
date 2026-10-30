@@ -1,6 +1,6 @@
 # Maintainer: Ricarsz <Ricarsz@users.noreply.github.com>
 pkgname=rsztui
-pkgver=1.2.0
+pkgver=1.2.1
 pkgrel=1
 pkgdesc="Terminal control panel for ASUS TUF laptops using asusctl and NetworkManager"
 arch=('x86_64' 'aarch64')
