@@ -3325,6 +3325,39 @@ fn record_mouse(app: &App, rect: Rect, action: MouseAction) {
         .push(MouseTarget { rect, action });
 }
 
+/// 按显示宽度补空格（中文占两列），让列对齐且整行不超过面板宽度。
+fn pad_display(text: &str, width: usize) -> String {
+    let text = util::truncate(text, width);
+    let used = text.width();
+    let mut out = text;
+    if used < width {
+        out.push_str(&" ".repeat(width - used));
+    }
+    out
+}
+
+/// 一行一行渲染：每行只占一行高度、超宽直接裁剪（绝不自动换行），
+/// 并在同一个 y 上登记鼠标命中区 —— 绘制位置与命中区因此不可能错开。
+fn row_list(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    rows: Vec<(Line<'static>, Option<MouseAction>)>,
+) {
+    let bottom = area.bottom();
+    for (offset, (line, action)) in rows.into_iter().enumerate() {
+        let y = match area.y.checked_add(offset as u16) {
+            Some(y) if y < bottom => y,
+            _ => break,
+        };
+        let row = Rect::new(area.x, y, area.width, 1);
+        if let Some(action) = action {
+            record_mouse(app, row, action);
+        }
+        frame.render_widget(Paragraph::new(line), row);
+    }
+}
+
 fn section(title: &'static str) -> Line<'static> {
     Line::from(vec![
         Span::styled("  ▍ ", Style::new().fg(pal().accent)),
@@ -3377,6 +3410,34 @@ fn hex_color(hex: &str) -> Color {
     )
 }
 
+/// 服务列表三列的显示宽度（名称、状态、自启）。
+///
+/// 中文占两列，所以列宽必须按显示宽度算：整行显示宽度不超过面板宽度，
+/// 段落才不会自动换行，一行条目才不会被撑成两行。
+fn service_columns(
+    inner_width: u16,
+    services: &[crate::services::ServiceInfo],
+) -> (usize, usize, usize) {
+    let active_w = services
+        .iter()
+        .map(|info| active_zh(&info.active).width())
+        .max()
+        .unwrap_or(6)
+        .max(6)
+        + 2;
+    let enabled_w = services
+        .iter()
+        .map(|info| enabled_zh(&info.enabled).width())
+        .max()
+        .unwrap_or(6)
+        .max(6)
+        + 2;
+    let name_w = (inner_width as usize)
+        .saturating_sub(3 + active_w + enabled_w)
+        .max(8);
+    (name_w, active_w, enabled_w)
+}
+
 fn draw_services(frame: &mut Frame, area: Rect, app: &App) {
     let cols =
         Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).split(area);
@@ -3385,13 +3446,14 @@ fn draw_services(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(cols[0]);
     frame.render_widget(block, cols[0]);
 
-    let mut lines = Vec::new();
+    // 中文占两列：原先用 `{:<10}` 按字符数补空格，"运行中"占 6 列却只补 7 个空格，
+    // 整行显示宽度会超过面板宽度，段落于是自动换行、一条服务占去两行。
+    // 而 record_mouse 是一行记一个条目，行号一旦错开，鼠标就会点到别的条目上。
+    // 这里按显示宽度补空格，并让每行单独渲染（row_list），保证"看到的行"就是"点到的行"。
+    let (name_w, active_w, enabled_w) = service_columns(inner.width, &app.services);
+
+    let mut rows: Vec<(Line<'static>, Option<MouseAction>)> = Vec::new();
     for (index, info) in app.services.iter().enumerate() {
-        record_mouse(
-            app,
-            Rect::new(inner.x, inner.y + index as u16, inner.width, 1),
-            MouseAction::Service(index),
-        );
         let selected = index == app.service_sel;
         let hovered = app.hover == Some(MouseAction::Service(index));
         let marker = if selected { "▶" } else { " " };
@@ -3407,38 +3469,51 @@ fn draw_services(frame: &mut Frame, area: Rect, app: &App) {
             "masked" => pal().bad,
             _ => pal().dim,
         };
-        lines.push(Line::from(vec![
+        let name_style = if selected {
+            Style::new().bg(pal().surface).fg(pal().accent).bold()
+        } else if hovered {
+            Style::new().bg(pal().surface_hover).fg(pal().text)
+        } else {
+            Style::new().fg(pal().text)
+        };
+        let row = Line::from(vec![
             Span::styled(
-                format!(" {marker} {:<24}", util::truncate(info.display_name(), 24)),
-                if selected {
-                    Style::new().bg(pal().surface).fg(pal().accent).bold()
-                } else if hovered {
-                    Style::new().bg(pal().surface_hover).fg(pal().text)
-                } else {
-                    Style::new().fg(pal().text)
-                },
+                format!(" {marker} {}", pad_display(info.display_name(), name_w)),
+                name_style,
             ),
             Span::styled(
-                format!("{:<10}", active_zh(&info.active)),
+                pad_display(active_zh(&info.active), active_w),
                 Style::new().fg(active_color),
             ),
             Span::styled(
-                format!("{:<12}", enabled_zh(&info.enabled)),
+                pad_display(enabled_zh(&info.enabled), enabled_w),
                 Style::new().fg(enabled_color),
             ),
-        ]));
+        ]);
+        rows.push((row, Some(MouseAction::Service(index))));
     }
 
-    lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(
-        " s 启动   t 停止   R 重启",
-        Style::new().fg(pal().dim),
-    )));
-    lines.push(Line::from(Span::styled(
-        " e 启用自启   d 禁用自启   E 启用并启动   D 禁用并停止",
-        Style::new().fg(pal().dim),
-    )));
-    let y = inner.y + lines.len() as u16;
+    rows.push((Line::raw(""), None));
+    rows.push((
+        Line::from(Span::styled(
+            " s 启动   t 停止   R 重启",
+            Style::new().fg(pal().dim),
+        )),
+        None,
+    ));
+    // 面板窄时把长提示换成短提示，避免被 row_list 截断成半句。
+    let long_hint = " e 启用自启   d 禁用自启   E 启用并启动   D 禁用并停止";
+    let short_hint = " e 启用自启   d 禁用自启";
+    let enable_hint = if UnicodeWidthStr::width(long_hint) <= inner.width as usize {
+        long_hint
+    } else {
+        short_hint
+    };
+    rows.push((
+        Line::from(Span::styled(enable_hint, Style::new().fg(pal().dim))),
+        None,
+    ));
+    let y = inner.y + rows.len() as u16;
     if let Some(line) = action_bar(
         app,
         inner,
@@ -3466,13 +3541,10 @@ fn draw_services(frame: &mut Frame, area: Rect, app: &App) {
             ),
         ],
     ) {
-        lines.push(line);
+        rows.push((line, None));
     }
 
-    frame.render_widget(
-        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
-        inner,
-    );
+    row_list(frame, app, inner, rows);
 
     let block = panel(" 服务详情 ");
     let inner = block.inner(cols[1]);
@@ -4090,6 +4162,7 @@ fn temp_color(value: f32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -4161,6 +4234,44 @@ mod tests {
         assert!(text.contains("615.78.08"));
         assert!(text.contains("PCIe 4.0 x8"));
         assert!(text.contains("38.0°C"));
+    }
+
+    fn service(unit: &str, active: &str, enabled: &str) -> services::ServiceInfo {
+        services::ServiceInfo {
+            unit: format!("{unit}.service"),
+            load: "loaded".into(),
+            active: active.into(),
+            enabled: enabled.into(),
+        }
+    }
+
+    #[test]
+    fn service_columns_keep_rows_one_line_wide() {
+        // niri 下半屏浮动时窗口是 1280x1374 ≈ 108 列，服务面板内宽只有 ~49 列；
+        // 早前按字符数补空格，"运行中"占 6 列却只补 7 个空格，整行 55 列 > 49 列，
+        // 段落自动换行成两行，鼠标命中区却仍是一行一个条目，于是点到隔壁条目。
+        let rows = [
+            service("asusd", "active", "static"),
+            service("asus-shutdown", "active", "disabled"),
+            service("NetworkManager", "active", "enabled"),
+            service("systemd-resolved", "active", "enabled"),
+        ];
+        for inner_width in [49u16, 45, 37, 30, 27] {
+            let (name_w, active_w, enabled_w) = service_columns(inner_width, &rows);
+            let line = 3 + name_w + active_w + enabled_w;
+            assert!(
+                line <= inner_width as usize,
+                "inner={inner_width} line={line} 会换行"
+            );
+        }
+    }
+
+    #[test]
+    fn pad_display_counts_cjk_as_two_cells() {
+        assert_eq!(pad_display("运行中", 8), "运行中  ");
+        assert_eq!(UnicodeWidthStr::width(pad_display("已禁用", 8).as_str()), 8);
+        assert_eq!(UnicodeWidthStr::width(pad_display("static", 8).as_str()), 8);
+        assert_eq!(pad_display("abcdefghij", 6), "abcdef");
     }
 
     #[test]
