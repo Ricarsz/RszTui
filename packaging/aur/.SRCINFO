@@ -12,6 +12,6 @@ pkgbase = rsztui
 	optdepends = asusctl: ASUS performance, battery, fan and lighting control
 	optdepends = networkmanager: Wi-Fi, IPv4/DNS, VPN and hotspot management
 	source = rsztui-1.2.1.tar.gz::https://github.com/Ricarsz/RszTui/archive/refs/tags/v1.2.1.tar.gz
-	sha256sums = 6a22b4299ab53a822343c0db6c44694334f310230e52e5901cb76918460562c8
+	sha256sums = 22d89e8f03542fb4ca87bc152920dc4fcaaffbdd90c7fe7a87b4e9684959ce2c
 
 pkgname = rsztui
