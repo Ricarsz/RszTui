@@ -191,8 +191,25 @@ impl FanEdit {
     }
 
     pub fn adjust_pwm(&mut self, delta: i32) {
-        if let Some(value) = self.pwm.get_mut(self.sel) {
-            *value = (*value as i32 + delta).clamp(0, 255) as u8;
+        if self.sel >= self.pwm.len() {
+            return;
+        }
+        // asusd 要求 PWM 逐点不降，这里就地夹住，避免写出会被固件拒绝的曲线。
+        let lower = if self.sel == 0 {
+            0
+        } else {
+            self.pwm[self.sel - 1] as i32
+        };
+        let upper = if self.sel + 1 >= self.pwm.len() {
+            255
+        } else {
+            self.pwm[self.sel + 1] as i32
+        };
+        let upper = upper.max(lower);
+        let current = self.pwm[self.sel] as i32;
+        let next = (current + delta).clamp(lower, upper);
+        if next != current {
+            self.pwm[self.sel] = next as u8;
             self.dirty = true;
         }
     }
@@ -213,8 +230,11 @@ impl FanEdit {
         };
         let current = self.temp[self.sel] as i32;
         let upper = upper.max(lower);
-        self.temp[self.sel] = (current + delta).clamp(lower, upper) as u8;
-        self.dirty = true;
+        let next = (current + delta).clamp(lower, upper);
+        if next != current {
+            self.temp[self.sel] = next as u8;
+            self.dirty = true;
+        }
     }
 }
 
@@ -290,6 +310,7 @@ pub enum Pending {
     FanDefault,
     FanToggle(bool),
     FanCurveApply(FanEdit),
+    FanSwitch(String),
     FanEditClose,
     Service {
         unit: String,
@@ -417,6 +438,7 @@ pub fn run(cfg: Config, report: deps::Report) -> Result<()> {
         std::io::stdout(),
         PushKeyboardEnhancementFlags(
             KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
                 | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
         ),
         EnableMouseCapture
@@ -610,8 +632,11 @@ impl App {
 
     fn handle_key(&mut self, mut key: KeyEvent) -> Result<()> {
         key = self.translate_keypad(key);
+        key = normalize_shift(key);
 
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
+        {
             self.quit = true;
             return Ok(());
         }
@@ -631,15 +656,15 @@ impl App {
         match key.code {
             KeyCode::Char('q') => {
                 let dirty = self.unsaved_changes();
-                let body = if dirty.is_empty() {
-                    "退出 rsztui？".to_string()
+                if dirty.is_empty() {
+                    self.quit = true;
                 } else {
-                    format!(
+                    let body = format!(
                         "以下更改尚未应用：\n  • {}\n\n退出将丢弃这些更改，确定退出？",
                         dirty.join("\n  • ")
-                    )
-                };
-                self.confirm("退出", body, Pending::Quit);
+                    );
+                    self.confirm("退出", body, Pending::Quit);
+                }
             }
             KeyCode::Char('r') => {
                 self.deps = deps::check();
@@ -1018,10 +1043,10 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Esc => {
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
                 self.modal = None;
             }
-            KeyCode::Enter => self.modal_confirm()?,
+            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => self.modal_confirm()?,
             _ => {}
         }
         Ok(())
@@ -1413,7 +1438,7 @@ impl App {
             KeyCode::Char('s') => {
                 self.confirm(
                     "保存风扇预设",
-                    "把当前曲线的百分比值保存为预设？",
+                    "把当前性能模式已写入的 CPU/GPU 曲线保存为预设？\n同名预设会被覆盖。",
                     Pending::FanSave,
                 );
             }
@@ -1437,7 +1462,7 @@ impl App {
                 self.confirm(
                     "风扇曲线开关",
                     format!(
-                        "{}当前性能模式的风扇曲线？",
+                        "{}当前性能模式的 CPU/GPU 风扇曲线？",
                         if enabled { "启用" } else { "停用" }
                     ),
                     Pending::FanToggle(enabled),
@@ -1515,11 +1540,19 @@ impl App {
         }
 
         if let Some(next) = switch {
-            self.open_fan_edit(next)?;
-            self.status = format!(
-                "已切换到 {} 曲线（未保存的修改已丢弃）",
-                next.to_uppercase()
-            );
+            if self.fan_edit.as_ref().is_some_and(|e| e.dirty) {
+                self.confirm(
+                    "切换风扇曲线",
+                    format!(
+                        "当前曲线有未写入的修改，切换到 {} 会丢弃这些修改。继续？",
+                        next.to_uppercase()
+                    ),
+                    Pending::FanSwitch(next.to_string()),
+                );
+            } else {
+                self.open_fan_edit(next)?;
+                self.status = format!("已切换到 {} 曲线", next.to_uppercase());
+            }
         }
 
         if close {
@@ -2291,10 +2324,17 @@ impl App {
                     .cloned()
                     .ok_or_else(|| anyhow!("没有这个风扇预设"))?;
                 asus::fan_apply(preset.profile, &preset.cpu, &preset.gpu)?;
-                self.status = format!("已套用风扇预设：{}", preset.name);
+                self.refresh_fan()?;
+                self.status = format!(
+                    "已套用风扇预设：{}（{}，已启用）",
+                    preset.name,
+                    preset.profile.zh()
+                );
             }
             Pending::FanSave => {
                 let profile = self.profile.map(|p| p.active).unwrap_or(Profile::Balanced);
+                // 保存前重新读一次硬件，避免把界面上的旧曲线存成预设。
+                self.fan_curves = asus::fan_curves(profile)?;
                 let Some((cpu, gpu)) = asus::fan_data(&self.fan_curves) else {
                     bail!("没有读到完整的 CPU/GPU 风扇曲线");
                 };
@@ -2329,15 +2369,35 @@ impl App {
             Pending::FanDefault => {
                 let profile = self.profile.map(|p| p.active).unwrap_or(Profile::Balanced);
                 asus::fan_default(profile)?;
+                self.refresh_fan()?;
                 self.status = format!("{} 的风扇曲线已恢复默认", profile.zh());
             }
             Pending::FanCurveApply(edit) => {
                 let profile = self.profile.map(|p| p.active).unwrap_or(Profile::Balanced);
-                asus::fan_set_curve(profile, &edit.fan, &edit.data())?;
+                let result = asus::fan_set_curve(profile, &edit.fan, &edit.data());
+                let refreshed = self.refresh_fan();
+                result?;
+                refreshed?;
                 if let Some(current) = self.fan_edit.as_mut() {
+                    if let Some(curve) = self
+                        .fan_curves
+                        .iter()
+                        .find(|c| c.fan.eq_ignore_ascii_case(&edit.fan))
+                    {
+                        current.temp = curve.temp.clone();
+                        current.pwm = curve.pwm.clone();
+                    }
                     current.dirty = false;
                 }
-                self.status = format!("{} 风扇曲线已写入", edit.fan.to_uppercase());
+                self.status = format!(
+                    "{} 风扇曲线已写入并启用（{}）",
+                    edit.fan.to_uppercase(),
+                    profile.zh()
+                );
+            }
+            Pending::FanSwitch(fan) => {
+                self.open_fan_edit(&fan)?;
+                self.status = format!("已切换到 {} 曲线（未写入的修改已丢弃）", fan.to_uppercase());
             }
             Pending::FanEditClose => {
                 self.fan_edit = None;
@@ -2361,6 +2421,7 @@ impl App {
             Pending::FanToggle(enabled) => {
                 let profile = self.profile.map(|p| p.active).unwrap_or(Profile::Balanced);
                 asus::fan_set_enabled(profile, enabled)?;
+                self.refresh_fan()?;
                 self.status = format!(
                     "{} 的风扇曲线已{}",
                     profile.zh(),
@@ -2518,19 +2579,23 @@ impl App {
         updated
     }
 
+    /// 立刻重读当前性能模式的风扇曲线；写操作后调用，避免界面停留在旧值。
+    fn refresh_fan(&mut self) -> Result<()> {
+        let profile = self.profile.map(|p| p.active).unwrap_or(Profile::Balanced);
+        self.fan_curves = asus::fan_curves(profile)?;
+        if let Ok(summary) = asus::fan_enabled_summary() {
+            self.fan_enabled = summary;
+        }
+        self.fan_sel = self
+            .fan_sel
+            .min(self.cfg.fan_presets.len().saturating_sub(1));
+        Ok(())
+    }
+
     fn refresh_current_tab(&mut self) {
         match self.tab {
             Tab::Fan => {
-                let profile = self.profile.map(|p| p.active).unwrap_or(Profile::Balanced);
-                if let Ok(curves) = asus::fan_curves(profile) {
-                    self.fan_curves = curves;
-                }
-                if let Ok(summary) = asus::fan_enabled_summary() {
-                    self.fan_enabled = summary;
-                }
-                self.fan_sel = self
-                    .fan_sel
-                    .min(self.cfg.fan_presets.len().saturating_sub(1));
+                let _ = self.refresh_fan();
             }
             Tab::Lighting => match asus::aura_status() {
                 Ok(aura) => {
@@ -2569,6 +2634,20 @@ fn point_in(rect: Rect, x: u16, y: u16) -> bool {
         && y < rect.y.saturating_add(rect.height)
 }
 
+/// Kitty 协议终端（未启用 alternate keys 时）把 Shift+i 报成 `Char('i') + SHIFT`，
+/// 而应用里的大写绑定是 `Char('I')`；这里在入口统一归一化，文本输入同样受益。
+fn normalize_shift(mut key: KeyEvent) -> KeyEvent {
+    if key.modifiers.contains(KeyModifiers::SHIFT)
+        && let KeyCode::Char(c) = key.code
+    {
+        if c.is_ascii_lowercase() {
+            key.code = KeyCode::Char(c.to_ascii_uppercase());
+        }
+        key.modifiers.remove(KeyModifiers::SHIFT);
+    }
+    key
+}
+
 fn push_hist(hist: &mut VecDeque<u64>, value: u64) {
     if hist.len() >= HISTORY {
         hist.pop_front();
@@ -2588,7 +2667,7 @@ pub const AURA_COLORS: [(&str, &str); 6] = [
 fn pretty_fan_data(data: &str) -> String {
     data.split(',')
         .map(|point| match point.split_once('c') {
-            Some((temp, pwm)) => format!("{temp}°C:{pwm}"),
+            Some((temp, pwm)) => format!("{temp}°C:{}", pwm.trim_start_matches(':')),
             None => point.to_string(),
         })
         .collect::<Vec<_>>()
@@ -2657,7 +2736,8 @@ fn help_text() -> String {
         "",
         "风扇",
         "  i 编辑 CPU   I 编辑 GPU   e 启用/停用   d 恢复默认",
-        "  编辑中：j/k 选点  h/l PWM±1  H/L ±10  [ ] 温度  a 写入  Esc 取消",
+        "  编辑中：j/k 选点  h/l PWM±1  H/L ±10  [ ] 温度  c 切换  a 写入  Esc 取消",
+        "  a 写入并启用后会回读校验，失败会直接报错",
         "  j/k 选择预设   p 应用   s 保存当前曲线   x 删除",
         "",
         "灯光",
@@ -2685,6 +2765,7 @@ fn help_text() -> String {
         "说明",
         "  硬件修改直接写入 asusd/NM；配置文件写入前自动备份为 config.toml.bak",
         "  功耗值写入当前性能模式的 tuning，重启后由 asusd 自动恢复",
+        "  确认弹窗按 Enter/y，取消按 Esc/n",
         "  长文本弹窗用 j/k 或 PgUp/PgDn 滚动，Enter/Esc 关闭",
     ]
     .join("\n")
@@ -2693,6 +2774,41 @@ fn help_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shift_letter_normalizes_to_uppercase() {
+        let key = normalize_shift(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::SHIFT));
+        assert_eq!(key.code, KeyCode::Char('I'));
+        assert!(key.modifiers.is_empty());
+    }
+
+    #[test]
+    fn shift_without_letter_keeps_code() {
+        let key = normalize_shift(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT));
+        assert_eq!(key.code, KeyCode::Char('?'));
+        assert!(key.modifiers.is_empty());
+    }
+
+    #[test]
+    fn fan_edit_pwm_stays_monotonic() {
+        let curve = asus::FanCurve {
+            fan: "CPU".into(),
+            temp: vec![40, 50, 60],
+            pwm: vec![10, 20, 30],
+            enabled: true,
+        };
+        let mut edit = FanEdit::from_curve(&curve, "cpu").unwrap();
+        edit.adjust_pwm(200);
+        assert_eq!(edit.pwm, vec![20, 20, 30]);
+        edit.sel = 2;
+        edit.adjust_pwm(-200);
+        assert_eq!(edit.pwm, vec![20, 20, 20]);
+    }
+
+    #[test]
+    fn pretty_fan_data_has_single_colon() {
+        assert_eq!(pretty_fan_data("43c:30,46c:35"), "43°C:30  46°C:35");
+    }
 
     #[test]
     fn history_keeps_capacity() {

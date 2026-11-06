@@ -2363,7 +2363,11 @@ fn draw_fan_presets(frame: &mut Frame, area: Rect, app: &App) {
         )));
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
-            "  按 s 把当前已写入的曲线保存为预设",
+            if app.fan_edit.is_some() {
+                "  退出编辑后按 s 保存为预设"
+            } else {
+                "  按 s 把当前已写入的曲线保存为预设"
+            },
             Style::new().fg(pal().dim),
         )));
     } else {
@@ -2395,7 +2399,11 @@ fn draw_fan_presets(frame: &mut Frame, area: Rect, app: &App) {
         }
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
-            " p 应用   x 删除   s 覆盖保存",
+            if app.fan_edit.is_some() {
+                "  退出编辑后可 p 应用 / s 覆盖 / x 删除"
+            } else {
+                " p 应用   x 删除   s 覆盖保存"
+            },
             Style::new().fg(pal().dim),
         )));
     }
@@ -3927,6 +3935,9 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             crate::app::PerfFocus::Gpu => " j/k 选择 GPU  Enter/G 应用  f 焦点",
         },
         Tab::Battery => " h/l 上限  Enter 应用  o 单次充满  ? 帮助",
+        Tab::Fan if app.fan_edit.is_some() => {
+            " j/k 选点  h/l PWM±1  H/L ±10  [ ] 温度  c 切换  a 写入  Esc 取消"
+        }
         Tab::Fan => " i/I 编辑曲线  j/k 预设  p 应用  s 保存  e 启用  ? 帮助",
         Tab::Lighting => " b 亮度  e/E 灯效  c 颜色  S 静态色  ? 帮助",
         Tab::Network => " v 视图  j/k 选择  Enter 编辑  u/d 启停  p Ping  n DNS  c 缓存",
@@ -4007,7 +4018,7 @@ fn draw_modal(frame: &mut Frame, area: Rect, app: &App, modal: &Modal) {
     };
     let hint = match (confirm, modal) {
         (true, Modal::Hotspot(_)) => "   Tab 切换字段 · Enter 开启 / Esc 取消",
-        (true, _) => "   Enter 确认 / Esc 取消",
+        (true, _) => "   Enter/y 确认 · Esc/n 取消",
         (false, _) => "   j/k 滚动 · Enter 关闭",
     };
 

@@ -7,6 +7,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::util;
 
+/// asusctl 通过 DBus 写入失败时只把 `Error: ...` 打到 stdout，退出码仍然是 0。
+/// 只检查退出码会把失败当成功，因此所有 asusctl 调用统一走这里。
+fn ctl(args: &[&str]) -> Result<String> {
+    let out = util::run("asusctl", args)?;
+    if let Some(line) = out
+        .lines()
+        .find(|line| line.trim_start().starts_with("Error:"))
+    {
+        let detail = line.trim_start().trim_start_matches("Error:").trim();
+        bail!("asusctl {} 失败：{detail}", args.join(" "));
+    }
+    Ok(out)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Profile {
@@ -52,7 +66,7 @@ pub struct ProfileState {
 }
 
 pub fn profile_get() -> Result<ProfileState> {
-    let out = util::run("asusctl", &["profile", "get"])?;
+    let out = ctl(&["profile", "get"])?;
     let mut active = None;
     let mut ac = None;
     let mut battery = None;
@@ -78,7 +92,7 @@ pub fn profile_get() -> Result<ProfileState> {
 }
 
 pub fn profile_set(profile: Profile) -> Result<()> {
-    util::run("asusctl", &["profile", "set", profile.asus()])?;
+    ctl(&["profile", "set", profile.asus()])?;
     Ok(())
 }
 
@@ -93,12 +107,12 @@ pub fn profile_set_default(source: PowerSource, profile: Profile) -> Result<()> 
         PowerSource::Ac => "--ac",
         PowerSource::Battery => "--battery",
     };
-    util::run("asusctl", &["profile", "set", flag, profile.asus()])?;
+    ctl(&["profile", "set", flag, profile.asus()])?;
     Ok(())
 }
 
 pub fn profile_tuning() -> Result<bool> {
-    let out = util::run("asusctl", &["profile", "tuning"])?;
+    let out = ctl(&["profile", "tuning"])?;
     Ok(out.to_ascii_lowercase().contains("true"))
 }
 
@@ -158,7 +172,7 @@ pub fn battery_info() -> Result<BatteryInfo> {
     }
 
     if info.limit.is_none()
-        && let Ok(out) = util::run("asusctl", &["battery", "info"])
+        && let Ok(out) = ctl(&["battery", "info"])
     {
         for line in out.lines() {
             if let Some(v) = line.strip_prefix("Current battery charge limit:") {
@@ -261,17 +275,17 @@ pub fn battery_limit(percent: u8) -> Result<()> {
     if !(20..=100).contains(&percent) {
         bail!("电池上限必须在 20-100 之间");
     }
-    util::run("asusctl", &["battery", "limit", &percent.to_string()])?;
+    ctl(&["battery", "limit", &percent.to_string()])?;
     Ok(())
 }
 
 pub fn battery_oneshot(percent: Option<u8>) -> Result<()> {
     match percent {
         Some(p) => {
-            util::run("asusctl", &["battery", "oneshot", &p.to_string()])?;
+            ctl(&["battery", "oneshot", &p.to_string()])?;
         }
         None => {
-            util::run("asusctl", &["battery", "oneshot"])?;
+            ctl(&["battery", "oneshot"])?;
         }
     }
     Ok(())
@@ -317,7 +331,7 @@ impl Attr {
 }
 
 pub fn armoury() -> Result<Vec<Attr>> {
-    let out = util::run("asusctl", &["armoury", "list"])?;
+    let out = ctl(&["armoury", "list"])?;
     let mut attrs = Vec::new();
     let mut pending_name: Option<String> = None;
 
@@ -392,7 +406,7 @@ pub fn attr_map(attrs: &[Attr]) -> HashMap<&str, &Attr> {
 }
 
 pub fn armoury_set(name: &str, value: i32) -> Result<()> {
-    util::run("asusctl", &["armoury", "set", name, &value.to_string()])?;
+    ctl(&["armoury", "set", name, &value.to_string()])?;
     Ok(())
 }
 
@@ -502,10 +516,8 @@ pub struct FanCurve {
 }
 
 pub fn fan_curves(profile: Profile) -> Result<Vec<FanCurve>> {
-    let out = util::run(
-        "asusctl",
-        &["fan-curve", "--mod-profile", profile.asus(), "--fan", "cpu"],
-    )?;
+    // 不带 --fan：一次读回 CPU 与 GPU，避免不同 asusctl 版本把查询过滤成单条曲线。
+    let out = ctl(&["fan-curve", "--mod-profile", profile.asus()])?;
     Ok(parse_fan_curves(&out))
 }
 
@@ -557,12 +569,12 @@ fn parse_tuple(value: &str) -> Vec<u8> {
 }
 
 pub fn fan_enabled_summary() -> Result<String> {
-    let out = util::run("asusctl", &["fan-curve", "--get-enabled"])?;
+    let out = ctl(&["fan-curve", "--get-enabled"])?;
     Ok(out.trim().to_string())
 }
 
 pub fn led_status() -> Result<String> {
-    let out = util::run("asusctl", &["leds", "get"])?;
+    let out = ctl(&["leds", "get"])?;
     let value = out
         .split(':')
         .next_back()
@@ -572,92 +584,156 @@ pub fn led_status() -> Result<String> {
 }
 
 pub fn led_next() -> Result<()> {
-    util::run("asusctl", &["leds", "next"])?;
+    ctl(&["leds", "next"])?;
+    Ok(())
+}
+
+/// 解析并校验 asusctl 的曲线格式 `43c:30,46c:30,...`。
+/// asusd 要求温度严格递增、PWM 逐点不降，违反时只会报错、退出码仍是 0。
+fn parse_fan_points(data: &str) -> Result<(Vec<u8>, Vec<u8>)> {
+    let mut temps = Vec::new();
+    let mut pwms = Vec::new();
+    for point in data.split(',') {
+        let Some((temp, pwm)) = point.split_once('c') else {
+            bail!("风扇曲线格式不正确：{point}");
+        };
+        let temp: u8 = temp
+            .trim()
+            .parse()
+            .map_err(|_| anyhow::anyhow!("温度不是数字：{point}"))?;
+        let pwm: u8 = pwm
+            .trim()
+            .trim_start_matches(':')
+            .parse()
+            .map_err(|_| anyhow::anyhow!("PWM 不是数字：{point}"))?;
+        temps.push(temp);
+        pwms.push(pwm);
+    }
+    if temps.len() < 2 {
+        bail!("风扇曲线至少需要两个点");
+    }
+    for pair in temps.windows(2) {
+        if pair[1] <= pair[0] {
+            bail!("温度必须严格递增：{}°C → {}°C", pair[0], pair[1]);
+        }
+    }
+    for pair in pwms.windows(2) {
+        if pair[1] < pair[0] {
+            bail!("PWM 必须逐点不降：{} → {}", pair[0], pair[1]);
+        }
+    }
+    Ok((temps, pwms))
+}
+
+/// 回读校验：写入后曲线必须和提交的一致，且该风扇确实处于启用状态。
+fn verify_fan_curve(profile: Profile, fan: &str, data: &str) -> Result<()> {
+    let (temps, pwms) = parse_fan_points(data)?;
+    let curves = fan_curves(profile)?;
+    let curve = curves
+        .iter()
+        .find(|c| c.fan.eq_ignore_ascii_case(fan))
+        .ok_or_else(|| anyhow::anyhow!("写入后没有读到 {fan} 曲线"))?;
+    if curve.temp != temps || curve.pwm != pwms {
+        bail!("{fan} 曲线写入未生效（回读 PWM {:?}）", curve.pwm);
+    }
+    if !curve.enabled {
+        bail!("{fan} 曲线已写入但未启用");
+    }
     Ok(())
 }
 
 pub fn fan_apply(profile: Profile, cpu: &str, gpu: &str) -> Result<()> {
+    parse_fan_points(cpu)?;
+    parse_fan_points(gpu)?;
     profile_set(profile)?;
-    util::run(
-        "asusctl",
-        &[
-            "fan-curve",
-            "--mod-profile",
-            profile.asus(),
-            "--fan",
-            "cpu",
-            "--data",
-            cpu,
-        ],
-    )?;
-    util::run(
-        "asusctl",
-        &[
-            "fan-curve",
-            "--mod-profile",
-            profile.asus(),
-            "--fan",
-            "gpu",
-            "--data",
-            gpu,
-        ],
-    )?;
-    util::run(
-        "asusctl",
-        &[
-            "fan-curve",
-            "--mod-profile",
-            profile.asus(),
-            "--enable-fan-curves",
-            "true",
-        ],
-    )?;
-    Ok(())
-}
-
-pub fn fan_set_curve(profile: Profile, fan: &str, data: &str) -> Result<()> {
-    util::run(
-        "asusctl",
-        &[
+    ctl(&[
+        "fan-curve",
+        "--mod-profile",
+        profile.asus(),
+        "--fan",
+        "cpu",
+        "--data",
+        cpu,
+    ])?;
+    ctl(&[
+        "fan-curve",
+        "--mod-profile",
+        profile.asus(),
+        "--fan",
+        "gpu",
+        "--data",
+        gpu,
+    ])?;
+    for (fan, data) in [("cpu", cpu), ("gpu", gpu)] {
+        ctl(&[
             "fan-curve",
             "--mod-profile",
             profile.asus(),
             "--fan",
             fan,
-            "--data",
-            data,
-        ],
-    )?;
-    util::run(
-        "asusctl",
-        &[
-            "fan-curve",
-            "--mod-profile",
-            profile.asus(),
-            "--enable-fan-curves",
+            "--enable-fan-curve",
             "true",
-        ],
-    )?;
+        ])?;
+        verify_fan_curve(profile, fan, data)?;
+    }
+    Ok(())
+}
+
+pub fn fan_set_curve(profile: Profile, fan: &str, data: &str) -> Result<()> {
+    parse_fan_points(data)?;
+    ctl(&[
+        "fan-curve",
+        "--mod-profile",
+        profile.asus(),
+        "--fan",
+        fan,
+        "--data",
+        data,
+    ])?;
+    // 只启用当前风扇，避免把用户特意停用的另一条曲线重新打开。
+    ctl(&[
+        "fan-curve",
+        "--mod-profile",
+        profile.asus(),
+        "--fan",
+        fan,
+        "--enable-fan-curve",
+        "true",
+    ])?;
+    verify_fan_curve(profile, fan, data)?;
     Ok(())
 }
 
 pub fn fan_default(profile: Profile) -> Result<()> {
     profile_set(profile)?;
-    util::run("asusctl", &["fan-curve", "--default"])?;
+    ctl(&["fan-curve", "--default"])?;
+    // asusctl 的 --default 会把曲线置为未启用；这里重新启用，
+    // 避免「恢复默认」顺带关掉用户的风扇控制、界面显示成「停用」。
+    for fan in ["cpu", "gpu"] {
+        ctl(&[
+            "fan-curve",
+            "--mod-profile",
+            profile.asus(),
+            "--fan",
+            fan,
+            "--enable-fan-curve",
+            "true",
+        ])?;
+    }
+    if fan_curves(profile)?.iter().any(|c| !c.enabled) {
+        bail!("{} 风扇曲线已恢复默认，但未全部启用", profile.asus());
+    }
     Ok(())
 }
 
 pub fn fan_set_enabled(profile: Profile, enabled: bool) -> Result<()> {
-    util::run(
-        "asusctl",
-        &[
-            "fan-curve",
-            "--mod-profile",
-            profile.asus(),
-            "--enable-fan-curves",
-            if enabled { "true" } else { "false" },
-        ],
-    )?;
+    ctl(&[
+        "fan-curve",
+        "--mod-profile",
+        profile.asus(),
+        "--enable-fan-curves",
+        if enabled { "true" } else { "false" },
+    ])?;
     Ok(())
 }
 
@@ -835,17 +911,17 @@ pub fn brightness_name(level: u8) -> &'static str {
 }
 
 pub fn aura_next() -> Result<()> {
-    util::run("asusctl", &["aura", "effect", "--next-mode"])?;
+    ctl(&["aura", "effect", "--next-mode"])?;
     Ok(())
 }
 
 pub fn aura_prev() -> Result<()> {
-    util::run("asusctl", &["aura", "effect", "--prev-mode"])?;
+    ctl(&["aura", "effect", "--prev-mode"])?;
     Ok(())
 }
 
 pub fn aura_static(colour: &str) -> Result<()> {
-    util::run("asusctl", &["aura", "effect", "static", "-c", colour])?;
+    ctl(&["aura", "effect", "static", "-c", colour])?;
     Ok(())
 }
 
@@ -909,6 +985,33 @@ Fan curves for Performance
         assert_eq!(curves[0].temp.len(), 8);
         assert_eq!(curves[1].fan, "GPU");
         assert!(!curves[1].enabled);
+    }
+
+    #[test]
+    fn validates_fan_curve_points() {
+        let (temps, pwms) = parse_fan_points("43c:30,46c:30,52c:50").unwrap();
+        assert_eq!(temps, vec![43, 46, 52]);
+        assert_eq!(pwms, vec![30, 30, 50]);
+    }
+
+    #[test]
+    fn rejects_decreasing_pwm() {
+        // asusd 拒绝相邻点 PWM 下降，这个错误必须在这里就拦下来。
+        let err = parse_fan_points("43c:50,46c:30").unwrap_err();
+        assert!(err.to_string().contains("PWM 必须逐点不降"));
+    }
+
+    #[test]
+    fn rejects_non_increasing_temps() {
+        let err = parse_fan_points("43c:30,43c:40").unwrap_err();
+        assert!(err.to_string().contains("温度必须严格递增"));
+    }
+
+    #[test]
+    fn rejects_malformed_points() {
+        assert!(parse_fan_points("43:30").is_err());
+        assert!(parse_fan_points("43c:abc").is_err());
+        assert!(parse_fan_points("43c:30").is_err());
     }
 
     #[test]
