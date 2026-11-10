@@ -2,10 +2,11 @@ use std::cell::Cell;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{AURA_COLORS, App, IpForm, Modal, MouseAction, MouseTarget, NetView, Tab};
@@ -1225,7 +1226,7 @@ fn draw_asus_panel(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_performance(frame: &mut Frame, area: Rect, app: &App) {
-    let rows = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(area);
+    let rows = Layout::vertical([Constraint::Length(4), Constraint::Min(0)]).split(area);
     draw_perf_summary(frame, rows[0], app);
 
     let cols =
@@ -1278,7 +1279,23 @@ fn draw_perf_summary(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(if app.tuning { pal().good } else { pal().warn }),
         ),
     ]);
-    frame.render_widget(Paragraph::new(line), inner);
+    let pstate = &app.pstate;
+    let linked = if pstate.linked() {
+        Span::styled("联动正常", Style::new().fg(pal().good))
+    } else {
+        Span::styled("未检测到 EPP 联动", Style::new().fg(pal().warn))
+    };
+    let link = Line::from(vec![
+        Span::styled("  联动 ", Style::new().fg(pal().dim)),
+        Span::styled(pstate.summary(), Style::new().fg(pal().text)),
+        Span::raw("  "),
+        linked,
+        Span::styled(
+            "   asusd 切模式时同时改 profile 与 EPP",
+            Style::new().fg(pal().dim),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(vec![line, link]), inner);
 }
 
 fn draw_profiles(frame: &mut Frame, area: Rect, app: &App) {
@@ -1542,15 +1559,30 @@ fn draw_power_fields(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(pal().text)
         };
         let marker = if selected { "▶" } else { " " };
-        let range = format!("[{}..{}]", field.min, field.max);
-        lines.push(Line::from(vec![
+        let range = if field.writable() {
+            format!("[{}..{}]", field.min, field.max)
+        } else {
+            format!("固件不可调（{}）", field.value)
+        };
+        let note = if field.stale() {
+            Some("  存盘值越界，应用会被固件拒绝")
+        } else if !field.writable() {
+            Some("  dGPU 关闭时这一项没有固件接口")
+        } else {
+            None
+        };
+        let mut spans = vec![
             Span::styled(format!(" {marker} {:<16}", field.label), style),
             Span::styled(
                 format!("{:>4} {}", field.value, field.unit),
                 style.fg(if selected { pal().accent } else { pal().text }),
             ),
             Span::styled(format!("  {range}"), Style::new().fg(pal().dim)),
-        ]));
+        ];
+        if let Some(note) = note {
+            spans.push(Span::styled(note, Style::new().fg(pal().warn)));
+        }
+        lines.push(Line::from(spans));
     }
 
     lines.push(Line::raw(""));
@@ -1559,7 +1591,11 @@ fn draw_power_fields(frame: &mut Frame, area: Rect, app: &App) {
         Style::new().fg(pal().dim),
     )));
     lines.push(Line::from(Span::styled(
-        " 写入当前供电模式的 tuning，重启由 asusd 恢复",
+        " 数值来自固件真值；逐项写入并回读校验，写不进的项会单独列出",
+        Style::new().fg(pal().dim),
+    )));
+    lines.push(Line::from(Span::styled(
+        " 滚轮/拖动可直接调当前项，双击数值行等同 h/l",
         Style::new().fg(pal().dim),
     )));
     let y = inner.y + lines.len() as u16;
@@ -1942,6 +1978,8 @@ fn draw_battery_limit(frame: &mut Frame, area: Rect, app: &App) {
     ])
     .split(inner);
 
+    *app.limit_bar.borrow_mut() = Some(rows[0]);
+    record_mouse(app, rows[0], MouseAction::BatteryLimit);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
@@ -2200,6 +2238,33 @@ fn draw_fan_graph(frame: &mut Frame, area: Rect, app: &App) {
         });
 
     frame.render_widget(canvas, area);
+
+    // 鼠标：整个作图区可拖，每个点也能单独点中。
+    let plot = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    *app.fan_plot.borrow_mut() = Some(plot);
+    record_mouse(app, plot, MouseAction::FanPlot);
+    if let Some(edit) = app.fan_edit.as_ref()
+        && plot.width > 1
+        && plot.height > 1
+    {
+        for (index, (temp, pwm)) in edit.temp.iter().zip(edit.pwm.iter()).enumerate() {
+            let x = plot.x
+                + ((temp.saturating_sub(20) as u16 as f32 / 80.0) * (plot.width - 1) as f32).round()
+                    as u16;
+            let y =
+                plot.y + (((255 - *pwm) as f32 / 255.0) * (plot.height - 1) as f32).round() as u16;
+            record_mouse(
+                app,
+                Rect::new(x.saturating_sub(1), y, 3, 1),
+                MouseAction::FanPoint(index),
+            );
+        }
+    }
 }
 fn draw_fan_detail(frame: &mut Frame, area: Rect, app: &App) {
     let block = panel(" 曲线明细 ");
@@ -2440,12 +2505,17 @@ fn gradient_line(width: usize, from: &str, to: &str) -> Line<'static> {
 }
 
 fn draw_lighting(frame: &mut Frame, area: Rect, app: &App) {
-    let rows = Layout::vertical([Constraint::Length(11), Constraint::Min(0)]).split(area);
-    let cols =
-        Layout::horizontal([Constraint::Percentage(46), Constraint::Percentage(54)]).split(rows[0]);
+    let rows = Layout::vertical([Constraint::Length(13), Constraint::Min(0)]).split(area);
+    let cols = Layout::horizontal([
+        Constraint::Percentage(34),
+        Constraint::Percentage(28),
+        Constraint::Percentage(38),
+    ])
+    .split(rows[0]);
 
     draw_lighting_status(frame, cols[0], app);
-    draw_lighting_colors(frame, cols[1], app);
+    draw_aura_wheel(frame, cols[1], app);
+    draw_lighting_colors(frame, cols[2], app);
     let bottom = Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)])
         .spacing(1)
         .split(rows[1]);
@@ -2564,6 +2634,146 @@ fn draw_lighting_status(frame: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
         inner,
     );
+}
+
+/// 自定义取色圆盘：横向是色相环，离圆心越远越饱和。
+fn draw_aura_wheel(frame: &mut Frame, area: Rect, app: &App) {
+    let block = panel(" 自定义颜色 ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width < 6 || inner.height < 4 {
+        return;
+    }
+
+    let disc = Rect::new(inner.x, inner.y, inner.width, inner.height - 2);
+    *app.aura_disc.borrow_mut() = Some(disc);
+    record_mouse(app, disc, MouseAction::AuraDisc);
+    let hovered = app.hover == Some(MouseAction::AuraDisc);
+    frame.render_widget(
+        AuraDisc {
+            pick: app.aura_pick,
+            hovered,
+        },
+        disc,
+    );
+
+    let hex = app.aura_pick_hex();
+    let caption = Line::from(vec![
+        Span::styled("  ", Style::new()),
+        Span::styled(
+            "██ ",
+            Style::new().fg(hex_color(hex.trim_start_matches('#'))),
+        ),
+        Span::styled(hex.clone(), Style::new().fg(pal().text)),
+        Span::styled(
+            format!(
+                "  {:.0}°/{:.0}%",
+                app.aura_pick.0.rem_euclid(360.0),
+                app.aura_pick.1 * 100.0
+            ),
+            Style::new().fg(pal().dim),
+        ),
+    ]);
+    frame.render_widget(
+        Paragraph::new(caption),
+        Rect::new(inner.x, disc.bottom(), inner.width, 1),
+    );
+    if let Some(line) = action_bar(
+        app,
+        inner,
+        disc.bottom() + 1,
+        &[
+            (
+                "应用自定义色",
+                MouseAction::Key(KeyCode::Char('C'), KeyModifiers::NONE),
+            ),
+            (
+                "静态预设",
+                MouseAction::Key(KeyCode::Char('S'), KeyModifiers::NONE),
+            ),
+        ],
+    ) {
+        frame.render_widget(
+            Paragraph::new(line),
+            Rect::new(inner.x, disc.bottom() + 1, inner.width, 1),
+        );
+    }
+}
+
+struct AuraDisc {
+    pick: (f32, f32),
+    hovered: bool,
+}
+
+impl Widget for AuraDisc {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.width < 4 || area.height < 3 {
+            return;
+        }
+        let cx = area.x as f32 + area.width as f32 / 2.0;
+        let cy = area.y as f32 + area.height as f32 / 2.0;
+        let rx = (area.width as f32 / 2.0 - 0.5).max(0.5);
+        let ry = (area.height as f32 / 2.0 - 0.5).max(0.5);
+        for row in area.y..area.bottom() {
+            for column in area.x..area.right() {
+                let sx = (column as f32 + 0.5 - cx) / rx;
+                let mut upper = None;
+                let mut lower = None;
+                for (slot, sub) in [&mut upper, &mut lower].into_iter().enumerate() {
+                    let sy = (row as f32 + (slot as f32 + 0.5) / 2.0 - cy) / ry;
+                    let radius = (sx * sx + sy * sy).sqrt();
+                    if radius <= 1.0 {
+                        let hue = sy.atan2(sx).to_degrees();
+                        *sub = Some(hsv_color(hue, radius));
+                    }
+                }
+                let cell = &mut buf[(column, row)];
+                match (upper, lower) {
+                    (Some(top), Some(bottom)) => {
+                        cell.set_symbol("▀");
+                        cell.set_fg(top);
+                        cell.set_bg(bottom);
+                    }
+                    (Some(top), None) => {
+                        cell.set_symbol("▀");
+                        cell.set_fg(top);
+                        cell.set_bg(pal().surface);
+                    }
+                    (None, Some(bottom)) => {
+                        cell.set_symbol("▄");
+                        cell.set_fg(bottom);
+                        cell.set_bg(pal().surface);
+                    }
+                    (None, None) => {
+                        cell.set_symbol(" ");
+                        cell.set_bg(if self.hovered {
+                            pal().surface_hover
+                        } else {
+                            pal().surface
+                        });
+                    }
+                }
+            }
+        }
+
+        // 当前取色的十字标记。
+        let radius = self.pick.1.clamp(0.0, 1.0);
+        let hue = self.pick.0.to_radians();
+        let mark_x = cx + rx * radius * hue.cos();
+        let mark_y = cy + ry * radius * hue.sin();
+        for (dx, dy) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+            let x = (mark_x.round() as i32 + dx).clamp(area.x as i32, area.right() as i32 - 1);
+            let y = (mark_y.round() as i32 + dy).clamp(area.y as i32, area.bottom() as i32 - 1);
+            let cell = &mut buf[(x as u16, y as u16)];
+            cell.set_symbol("┼");
+            cell.set_fg(Color::White);
+        }
+    }
+}
+
+fn hsv_color(hue: f32, sat: f32) -> Color {
+    let (r, g, b) = util::hsv_to_rgb(hue, sat, 1.0);
+    Color::Rgb(r, g, b)
 }
 
 fn draw_lighting_colors(frame: &mut Frame, area: Rect, app: &App) {
@@ -4176,6 +4386,39 @@ mod tests {
     use crate::services;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    #[test]
+    fn aura_disc_paints_colours_and_marker() {
+        let area = Rect::new(0, 0, 40, 20);
+        let mut buf = Buffer::empty(area);
+        AuraDisc {
+            pick: (0.0, 0.9),
+            hovered: false,
+        }
+        .render(area, &mut buf);
+
+        let mut colours = std::collections::HashSet::new();
+        let mut marker = 0;
+        for cell in buf.content() {
+            if let Color::Rgb(r, g, b) = cell.fg {
+                colours.insert((r, g, b));
+            }
+            if cell.symbol() == "┼" {
+                marker += 1;
+            }
+        }
+        assert!(
+            colours.len() > 30,
+            "圆盘应该铺满渐变，实际 {} 种颜色",
+            colours.len()
+        );
+        assert_eq!(marker, 4, "取色点应该画出十字标记");
+
+        // 色相 0 度、接近圆心 → 接近白色；圆外 → 保持背景。
+        let center = &buf[(20, 10)];
+        assert!(matches!(center.fg, Color::Rgb(..)));
+        assert_eq!(buf[(0, 0)].symbol(), " ");
+    }
 
     #[test]
     fn labels_link_speed() {

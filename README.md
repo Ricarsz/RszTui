@@ -6,14 +6,16 @@ ASUS TUF 的终端控制台。Rust + [ratatui](https://ratatui.rs/)，底层调�
 
 ## 特性
 
-- **性能/功耗**：三种性能模式、AC/电池默认模式、PL1/PL2/PL3、dGPU TGP、Dynamic Boost、温度墙
+- **性能/功耗**：三种性能模式、AC/电池默认模式、PL1/PL2/PL3、dGPU TGP、Dynamic Boost、温度墙；数值取自固件真值，逐项写入并回读校验，不可写的项自动跳过
+- **联动**：性能页实时显示 `platform_profile` / EPP / governor，可核对 asusd 切模式时是否真的改到 `amd-pstate`
 - **电池**：20–100% 充电上限、单次充满、健康度/循环/功率/剩余时间
 - **GPU**：集显 / 混合 / 独显直连（`asusctl armoury`，需重启）；「显卡」页只读展示每块 GPU 的型号、驱动、PCIe 链路、核心/热点/显存温度、负载、显存与功耗（NVIDIA 走 `nvidia-smi`，AMD/Intel 走 DRM + hwmon）
-- **风扇**：图形化曲线、逐点编辑、原始 PWM 保存、预设、当前转速
-- **灯光**：当前灯效/亮度/颜色、Aura 模式切换、静态色
+- **风扇**：图形化曲线、逐点编辑（可用鼠标拖动温控点）、原始 PWM 保存、预设、当前转速
+- **灯光**：当前灯效/亮度/颜色、Aura 模式切换、静态色、鼠标取色圆盘自定义颜色
 - **网络**：Wi-Fi 扫描连接与改密码、DHCP/静态 IP、网关、DNS/DoT、VPN、热点（可改 SSID/密码）、连接管理、Ping/DNS 查询、DNS/邻居缓存、IPv6 只读展示；接口实时速率、链路速率与累计流量
 - **服务**：asusd、asus-shutdown、NetworkManager、systemd-resolved 的启停/重启/自启
 - **监控**：CPU 每核实测频率（cpufreq）与负载、封装功耗（RAPL）、内存/交换、磁盘占用、GPU 负载、风扇转速、按设备归类的温度（CPU / NVIDIA / AMD / NVMe Composite / 内存 / ACPI）
+- **鼠标优先**：导航、列表、操作栏、滑块、取色圆盘、风扇曲线都能点；滚轮停在数值上调值，按住可拖动
 - **外观**：5 套配色主题，网络速率单位可选二进制 / 十进制 / 比特
 - **启动**：立即绘制界面，硬件信息、传感器采样、ASUS 状态与网络快照在后台加载，不阻塞首帧
 - **诊断**：发行版、ASUS 笔记本、CPU/GPU 型号、asusctl/asusd/nmcli/NetworkManager 检测

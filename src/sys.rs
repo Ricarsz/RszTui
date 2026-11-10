@@ -631,3 +631,62 @@ mod net_tests {
         assert!(!super::is_virtual_iface("wlan0"));
     }
 }
+
+/// CPU 调频联动状态：`asusd` 切性能模式时会同时改 ACPI platform_profile 与
+/// EPP（amd-pstate-epp），governor 保持 powersave 不变。这里只读，不做任何写入。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Pstate {
+    pub driver: String,
+    pub governor: String,
+    pub platform_profile: String,
+    pub epp: String,
+    pub epp_choices: Vec<String>,
+}
+
+impl Pstate {
+    pub fn summary(&self) -> String {
+        format!(
+            "{} · {} · EPP {} · {}",
+            short(&self.platform_profile),
+            short(&self.governor),
+            short(&self.epp),
+            short(&self.driver)
+        )
+    }
+
+    /// EPP 是否跟着性能模式走：cpu0 的候选值里至少要包含 asusd 会写的三档。
+    pub fn linked(&self) -> bool {
+        ["performance", "balance_performance", "power"]
+            .iter()
+            .all(|want| self.epp_choices.iter().any(|have| have == want))
+    }
+}
+
+fn short(text: &str) -> &str {
+    if text.is_empty() { "未知" } else { text }
+}
+
+pub fn pstate() -> Pstate {
+    let cpu0 = "/sys/devices/system/cpu/cpu0/cpufreq";
+    let epp_choices =
+        fs::read_to_string(format!("{cpu0}/energy_performance_available_preferences"))
+            .map(|text| {
+                text.split_whitespace()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+    Pstate {
+        driver: read_trim(format!("{cpu0}/scaling_driver")),
+        governor: read_trim(format!("{cpu0}/scaling_governor")),
+        platform_profile: read_trim("/sys/firmware/acpi/platform_profile".to_string()),
+        epp: read_trim(format!("{cpu0}/energy_performance_preference")),
+        epp_choices,
+    }
+}
+
+fn read_trim(path: String) -> String {
+    fs::read_to_string(path)
+        .map(|text| text.trim().to_string())
+        .unwrap_or_default()
+}

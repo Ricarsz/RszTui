@@ -420,6 +420,83 @@ pub struct PowerField {
     pub value: i32,
 }
 
+impl PowerField {
+    /// 固件给的是 `min == max` 时这个属性根本不可写（例如关掉 dGPU 后的 nv_tgp）。
+    pub fn writable(&self) -> bool {
+        self.max > self.min
+    }
+
+    /// asusd 存了值、固件却还停在旧值：说明上次写入被固件拒绝。
+    pub fn stale(&self) -> bool {
+        self.writable() && (self.value < self.min || self.value > self.max)
+    }
+}
+
+/// 固件真值：`asus-armoury` 的 current/min/max_value。asusctl 的 `armoury list`
+/// 报的是 asusd 存盘配置，可能落在固件范围外，所以两边都要看。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FirmwareRange {
+    pub current: i32,
+    pub min: i32,
+    pub max: i32,
+}
+
+/// 固件属性目录；测试里用 RSZTUI_FW_ATTRS 指向临时目录。
+fn firmware_attrs() -> std::path::PathBuf {
+    std::env::var_os("RSZTUI_FW_ATTRS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from("/sys/class/firmware-attributes/asus-armoury/attributes")
+        })
+}
+
+pub fn firmware_range(name: &str) -> Option<FirmwareRange> {
+    let base = firmware_attrs();
+    let read = |file: &str| -> Option<i32> {
+        fs::read_to_string(base.join(name).join(file))
+            .ok()?
+            .trim()
+            .parse::<i32>()
+            .ok()
+    };
+    Some(FirmwareRange {
+        current: read("current_value")?,
+        min: read("min_value")?,
+        max: read("max_value")?,
+    })
+}
+
+/// 单次写入的结果：界面按字段汇总，不再「一错全废」。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetOutcome {
+    Applied(i32),
+    Skipped(&'static str),
+    Failed(String),
+}
+
+pub fn set_power_field(field: &PowerField) -> SetOutcome {
+    if !field.writable() {
+        return SetOutcome::Skipped("固件不可调");
+    }
+    let want = field.value.clamp(field.min, field.max);
+    if let Err(err) = armoury_set(field.key, want) {
+        return SetOutcome::Failed(format!("{err:#}"));
+    }
+    // 回读校验：asusctl 退出码是 0 也可能没写进去。
+    let mut actual = None;
+    for _ in 0..3 {
+        actual = firmware_range(field.key).map(|range| range.current);
+        if actual == Some(want) {
+            return SetOutcome::Applied(want);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    match actual {
+        Some(value) if value != want => SetOutcome::Failed(format!("固件未生效（当前 {value}）")),
+        _ => SetOutcome::Failed("写入后读不回来".to_string()),
+    }
+}
+
 pub const POWER_FIELDS: [(&str, &str, &str); 6] = [
     ("ppt_pl1_spl", "CPU PL1（持续）", "W"),
     ("ppt_pl2_sppt", "CPU PL2（短时）", "W"),
@@ -436,13 +513,15 @@ pub fn power_fields(attrs: &[Attr]) -> Vec<PowerField> {
         let Some(attr) = map.get(key) else {
             continue;
         };
+        // 优先用固件真值；读不到（非 ARMOURY 机型的老内核）才退回 asusctl。
+        let range = firmware_range(key);
         fields.push(PowerField {
             key,
             label,
             unit,
-            min: attr.min(),
-            max: attr.max(),
-            value: attr.current(),
+            min: range.map(|r| r.min).unwrap_or_else(|| attr.min()),
+            max: range.map(|r| r.max).unwrap_or_else(|| attr.max()),
+            value: range.map(|r| r.current).unwrap_or_else(|| attr.current()),
         });
     }
     fields
@@ -1022,5 +1101,73 @@ Fan curves for Performance
         );
         assert_eq!(Profile::from_asus(" quiet "), Some(Profile::Quiet));
         assert_eq!(Profile::from_asus("unknown"), None);
+    }
+}
+
+#[cfg(test)]
+mod firmware_tests {
+    use super::*;
+
+    fn attr(root: &std::path::Path, name: &str, current: &str, min: &str, max: &str) {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (file, value) in [
+            ("current_value", current),
+            ("min_value", min),
+            ("max_value", max),
+        ] {
+            std::fs::write(dir.join(file), format!("{value}\n")).unwrap();
+        }
+    }
+
+    struct EnvGuard(String);
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe { std::env::remove_var(&self.0) }
+        }
+    }
+
+    #[test]
+    fn reads_firmware_truth_and_flags_unwritable() {
+        let root = std::env::temp_dir().join(format!("rsztui-fw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        attr(&root, "ppt_pl2_sppt", "30", "35", "65");
+        attr(&root, "nv_tgp", "55", "0", "0");
+        // SAFETY: 测试单线程改动本进程环境变量。
+        unsafe { std::env::set_var("RSZTUI_FW_ATTRS", &root) };
+        let _guard = EnvGuard("RSZTUI_FW_ATTRS".into());
+
+        let pl2 = firmware_range("ppt_pl2_sppt").expect("应读到固件范围");
+        assert_eq!((pl2.current, pl2.min, pl2.max), (30, 35, 65));
+        let mut field = PowerField {
+            key: "ppt_pl2_sppt",
+            label: "测试",
+            unit: "W",
+            value: 30,
+            min: 35,
+            max: 65,
+        };
+        assert!(field.writable(), "min < max 应可写");
+        // 存盘值 30 低于固件下限 35 → 越界提示
+        field.value = 30;
+        assert!(field.stale(), "30 低于固件下限，应判越界");
+        field.value = 45;
+        assert!(!field.stale(), "45 在 35..65 内不算越界");
+        let nv = firmware_range("nv_tgp").unwrap();
+        assert_eq!(nv.min, nv.max, "dGPU 关闭时固件 min=max=0");
+        let nv_field = PowerField {
+            key: "nv_tgp",
+            label: "TGP",
+            unit: "W",
+            value: 55,
+            min: nv.min,
+            max: nv.max,
+        };
+        assert!(!nv_field.writable(), "min == max 不可写");
+        // 不可写时界面走「固件不可调」分支，不再判越界
+        assert!(!nv_field.stale());
+        assert!(matches!(set_power_field(&nv_field), SetOutcome::Skipped(_)));
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }

@@ -25,6 +25,8 @@ sudo rsztui power apply --pl1 45 --pl2 55 --pl3 65
 sudo rsztui power apply --gpu-tgp 70 --gpu-temp 80
 ```
 
+写功耗前会先读 `/sys/class/firmware-attributes/asus-armoury/attributes/<项>/` 的 min/max/current：越界值会被夹到固件范围，超出 `min == max` 的项（例如核显模式下 `nv_tgp`、`nv_dynamic_boost`）直接跳过。每项写完会回读 `current_value` 校验，`power apply`/`power preset` 逐项输出 `已写入`/`跳过`/`失败`，不再因为某一项写不进而整条命令失败——全部失败时才返回非零，并在 stderr 提示「没有任何一项写进固件」。
+
 ## 电池
 
 ```bash
@@ -123,7 +125,7 @@ sudo rsztui service disable asus-shutdown --now
 | `Home` / `End` | 跳到列表首/尾 |
 | `PageUp` / `PageDown` | 列表翻 5 项 |
 
-鼠标：点击导航/列表/操作栏/性能页各面板，点击列表行选中，双击条目执行默认操作（切换性能模式/应用预设/进入连接/应用 GPU/应用颜色），滚轮上下移动当前列表。弹窗确认按 `Enter` 或 `y`，取消按 `Esc` 或 `n`，底部按钮也可点；性能/电池/服务/灯光/风扇页底部有可点操作栏。小键盘：NumLock 关闭时直接发方向键；NumLock 开启且终端支持 Kitty 键盘协议时，`8/2/4/6/5` 映射为上/下/左/右/确认。长文本弹窗（帮助/Ping/DNS）用 `j/k` 或 `PageUp/PageDown` 滚动，`Enter`/`Esc` 关闭。
+鼠标：点击导航/列表/操作栏/性能页各面板，点击列表行选中，双击条目执行默认操作（切换性能模式/应用预设/进入连接/应用 GPU/应用颜色），滚轮上下移动当前列表。滚轮停在可调数值上时直接调值：功耗 ±1 W、充电上限 ±5%、风扇 PWM ±8；取色圆盘、风扇作图区、充电上限滑条支持按住拖动。弹窗确认按 `Enter` 或 `y`，取消按 `Esc` 或 `n`，底部按钮也可点；性能/电池/服务/灯光/风扇页底部有可点操作栏。小键盘：NumLock 关闭时直接发方向键；NumLock 开启且终端支持 Kitty 键盘协议时，`8/2/4/6/5` 映射为上/下/左/右/确认。长文本弹窗（帮助/Ping/DNS）用 `j/k` 或 `PageUp/PageDown` 滚动，`Enter`/`Esc` 关闭。
 
 ### 显卡
 
@@ -139,14 +141,18 @@ sudo rsztui service disable asus-shutdown --now
 | `j/k` | 选择 |
 | `Enter` | 应用模式或功耗 |
 | `a` / `b` | 设为 AC / 电池默认 |
-| `h/l` | 功耗微调；`H/L` 每次 5 |
+| `h/l` | 功耗微调；`H/L` 每次 5；滚轮停在数值上同样按 1 调 |
 | `[` / `]` | 选择功耗预设 |
 | `p` | 套用预设 |
 | `g` / `G` | 选择 / 应用 GPU 模式 |
 
+功耗面板显示的是**固件真值**：每行右侧 `[最小..最大]` 来自 `asus-armoury` 的 sysfs 文件，与 asusctl 报的 asusd 存盘配置可能不一致；存盘值落在固件范围外时该行会标黄「存盘值越界，应用会被固件拒绝」，`min == max` 的项显示「固件不可调」，滚轮/`h/l` 都不会改动它。应用时逐项写入并回读，状态栏按项列出「已写入 N 项 / 跳过 / 失败原因」，一项写坏不影响其它项。
+
+第二行是 `asusd` 与 `amd-pstate` 的联动实况：`platform_profile`、`scaling_governor`、`energy_performance_preference`（EPP）与驱动。切换性能模式时 asusd 会同时写 ACPI `platform_profile` 和 cpu0 的 EPP（见 `/etc/asusd/asusd.ron` 的 `platform_profile_linked_epp` 与 `profile_*_epp`），`scaling_governor` 由内核保持 `powersave`；EPP 候选值里含 `performance`/`balance_performance`/`power` 时显示「联动正常」，否则提示「未检测到 EPP 联动」。
+
 ### 电池
 
-`h/l` 调上限，`Enter` 应用，`o` 单次充满。
+`h/l` 调上限，`Enter` 应用，`o` 单次充满。上限进度条支持鼠标：点击按列直接设百分比、按住左右拖动连续调、滚轮 ±5。
 
 ### 风扇
 
@@ -158,6 +164,7 @@ sudo rsztui service disable asus-shutdown --now
 | `[` / `]` | 温度 ±1 |
 | `c` | 编辑中切换 CPU/GPU（有未写入修改时先确认） |
 | `a` | 写入并启用曲线（写入后回读校验） |
+| 鼠标 | 作图区任意位置按下即拖动最近的点，纵坐标换算 PWM；按住拖出面板仍继续 |
 | `p` / `s` / `x` | 应用 / 保存 / 删除预设 |
 | `d` / `e` | 恢复默认（并重新启用）/ 启用停用 |
 
@@ -165,7 +172,9 @@ sudo rsztui service disable asus-shutdown --now
 
 ### 灯光
 
-`b` 亮度，`e/E` 下一个/上一个灯效，`c` 选颜色，`S` 应用静态色。
+`b` 亮度，`e/E` 下一个/上一个灯效，`c` 选颜色，`S` 应用静态色，`C` 应用圆盘自定义色。
+
+「自定义颜色」圆盘支持鼠标：点击或按住拖动取色（角度=色相，半径=饱和度），双击直接应用；底部显示十六进制值与角度/饱和度，右侧「应用自定义色」「静态预设」也可点。
 
 ### 网络
 

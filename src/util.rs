@@ -280,3 +280,42 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(3));
     }
 }
+
+/// HSV → RGB，色相按 0–360 度、饱和度与明度按 0–1。
+pub fn hsv_to_rgb(hue: f32, sat: f32, val: f32) -> (u8, u8, u8) {
+    let h = hue.rem_euclid(360.0) / 60.0;
+    let s = sat.clamp(0.0, 1.0);
+    let v = val.clamp(0.0, 1.0);
+    let c = v * s;
+    let x = c * (1.0 - ((h % 2.0) - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = match h as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let to = |channel: f32| ((channel + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    (to(r), to(g), to(b))
+}
+
+pub fn hsv_to_hex(hue: f32, sat: f32, val: f32) -> String {
+    let (r, g, b) = hsv_to_rgb(hue, sat, val);
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+#[cfg(test)]
+mod colour_tests {
+    use super::*;
+
+    #[test]
+    fn converts_primary_hues() {
+        assert_eq!(hsv_to_hex(0.0, 1.0, 1.0), "#ff0000");
+        assert_eq!(hsv_to_hex(120.0, 1.0, 1.0), "#00ff00");
+        assert_eq!(hsv_to_hex(240.0, 1.0, 1.0), "#0000ff");
+        assert_eq!(hsv_to_hex(0.0, 0.0, 1.0), "#ffffff");
+        assert_eq!(hsv_to_hex(200.0, 0.0, 0.0), "#000000");
+    }
+}

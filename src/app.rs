@@ -259,6 +259,12 @@ pub enum MouseAction {
     Service(usize),
     Gpu(usize),
     Color(usize),
+    /// 自定义取色圆盘：按下/拖动时按坐标算色相与饱和度。
+    AuraDisc,
+    /// 风扇曲线作图区：按下/拖动时移动最近的温控点。
+    FanPlot,
+    /// 充电上限滑条：按下/拖动直接设百分比。
+    BatteryLimit,
     CacheFlushDns,
     CacheFlushNeighbors,
     CacheEditSize,
@@ -353,6 +359,7 @@ struct CoreSnapshot {
     profile: Result<ProfileState, String>,
     battery: Result<BatteryInfo, String>,
     attrs: Result<Vec<asus::Attr>, String>,
+    pstate: crate::sys::Pstate,
     tuning: bool,
 }
 
@@ -379,7 +386,16 @@ pub struct App {
     pub led: String,
     pub aura: Option<asus::AuraStatus>,
     pub aura_color: usize,
+    /// 自定义颜色：色相 0–360 度、饱和度 0–1。
+    pub aura_pick: (f32, f32),
+    /// 风扇曲线作图区的实际矩形，拖动时用它换算 PWM。
+    pub fan_plot: RefCell<Option<Rect>>,
+    /// 取色圆盘与充电上限滑条的实际矩形，鼠标换算要用。
+    pub aura_disc: RefCell<Option<Rect>>,
+    pub limit_bar: RefCell<Option<Rect>>,
+    fan_drag: Option<usize>,
     pub tuning: bool,
+    pub pstate: crate::sys::Pstate,
     pub net_view: NetView,
     pub net_sel: usize,
     pub devices: Vec<nm::Device>,
@@ -500,7 +516,13 @@ impl App {
             led: "未知".into(),
             aura: None,
             aura_color: 0,
+            aura_pick: (0.0, 0.9),
+            fan_plot: RefCell::new(None),
+            aura_disc: RefCell::new(None),
+            limit_bar: RefCell::new(None),
+            fan_drag: None,
             tuning: false,
+            pstate: crate::sys::Pstate::default(),
             net_view: NetView::Connections,
             net_sel: 0,
             devices: Vec::new(),
@@ -749,11 +771,21 @@ impl App {
                         *last == action && now.duration_since(*time) < Duration::from_millis(450)
                     });
                     self.last_mouse = Some((now, action));
-                    self.activate_mouse(action, double)?;
+                    self.activate_mouse(action, double, (mouse.column, mouse.row))?;
                 }
             }
-            MouseEventKind::ScrollUp => self.scroll(-1)?,
-            MouseEventKind::ScrollDown => self.scroll(1)?,
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let action = self.mouse_action_at(mouse.column, mouse.row);
+                if action.is_some() {
+                    self.hover = action;
+                }
+                self.handle_drag(mouse.column, mouse.row, action)?;
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.fan_drag = None;
+            }
+            MouseEventKind::ScrollUp => self.scroll_at(mouse.column, mouse.row, -1)?,
+            MouseEventKind::ScrollDown => self.scroll_at(mouse.column, mouse.row, 1)?,
             _ => {}
         }
         Ok(())
@@ -768,6 +800,12 @@ impl App {
             .map(|target| target.action)
     }
 
+    /// 滚轮带坐标：即使终端没上报「仅移动」事件，也按指针位置判断调值对象。
+    fn scroll_at(&mut self, x: u16, y: u16, direction: i32) -> Result<()> {
+        self.hover = self.mouse_action_at(x, y);
+        self.scroll(direction)
+    }
+
     fn scroll(&mut self, direction: i32) -> Result<()> {
         let code = if direction < 0 {
             KeyCode::Up
@@ -780,10 +818,82 @@ impl App {
         if self.ip_form.is_some() {
             return Ok(());
         }
+        // 指针停在可调数值上时，滚轮调值而不是移动光标。
+        let step = if direction < 0 { -1 } else { 1 };
+        match self.hover {
+            Some(MouseAction::PowerField(index)) => {
+                self.perf_focus = PerfFocus::Power;
+                self.power_sel = index.min(self.power.len().saturating_sub(1));
+                self.adjust_power(step);
+                return Ok(());
+            }
+            Some(MouseAction::BatteryLimit) => {
+                self.limit_edit = (self.limit_edit as i32 + step * 5).clamp(20, 100) as u8;
+                self.limit_dirty = true;
+                self.status = format!("充电上限 → {}%（Enter 应用）", self.limit_edit);
+                self.status_err = false;
+                return Ok(());
+            }
+            Some(MouseAction::FanPoint(index)) => {
+                if let Some(edit) = self.fan_edit.as_mut() {
+                    let target = index.min(edit.pwm.len().saturating_sub(1));
+                    if let Some(slot) = edit.pwm.get_mut(target) {
+                        let next = (*slot as i32 + step * 8).clamp(0, 255) as u8;
+                        if next != *slot {
+                            *slot = next;
+                            edit.dirty = true;
+                            edit.sel = target;
+                            self.status = format!(
+                                "{}:{}°C → PWM {next}",
+                                edit.fan.to_uppercase(),
+                                edit.temp[target]
+                            );
+                            self.status_err = false;
+                        }
+                    }
+                }
+                return Ok(());
+            }
+            Some(MouseAction::FanPlot) => {
+                if let Some(edit) = self.fan_edit.as_mut() {
+                    let target = edit.sel.min(edit.pwm.len().saturating_sub(1));
+                    if let Some(slot) = edit.pwm.get_mut(target) {
+                        let next = (*slot as i32 + step * 8).clamp(0, 255) as u8;
+                        *slot = next;
+                        edit.dirty = true;
+                        self.status = format!(
+                            "{}:{}°C → PWM {next}",
+                            edit.fan.to_uppercase(),
+                            edit.temp[target]
+                        );
+                        self.status_err = false;
+                    }
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
         self.handle_tab_key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
-    fn activate_mouse(&mut self, action: MouseAction, double: bool) -> Result<()> {
+    /// 拖动：旋钮/滑条/曲线跟着指针走，指针移出控件也继续用最后方向。
+    fn handle_drag(&mut self, column: u16, row: u16, action: Option<MouseAction>) -> Result<()> {
+        match action {
+            Some(MouseAction::AuraDisc) => self.pick_aura(column, row),
+            Some(MouseAction::BatteryLimit) => self.set_limit_from(column),
+            Some(MouseAction::FanPlot) | Some(MouseAction::FanPoint(_)) => {
+                if self.fan_drag.is_none() {
+                    self.fan_drag = self.fan_index_at(column);
+                }
+                self.fan_drag_to(row);
+            }
+            None if self.fan_drag.is_some() => self.fan_drag_to(row),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn activate_mouse(&mut self, action: MouseAction, double: bool, at: (u16, u16)) -> Result<()> {
         match action {
             MouseAction::Tab(tab) => self.switch_tab(tab),
             MouseAction::Profile(index) => {
@@ -854,6 +964,27 @@ impl App {
                         format!("将 GPU 模式设为{}？修改后需要重启。", mode.zh()),
                         Pending::Gpu(mode),
                     );
+                }
+            }
+            MouseAction::AuraDisc => {
+                self.pick_aura(at.0, at.1);
+                if double {
+                    self.apply_aura_pick()?;
+                }
+            }
+            MouseAction::BatteryLimit => {
+                self.set_limit_from(at.0);
+            }
+            MouseAction::FanPlot => {
+                if self.fan_edit.is_none() {
+                    self.status = "先按 i 或 I 进入曲线编辑，再用鼠标拖点".into();
+                    self.status_err = false;
+                    return Ok(());
+                }
+                let index = self.fan_index_at(at.0);
+                if self.fan_edit.is_some() {
+                    self.fan_drag = index;
+                    self.fan_drag_to(at.1);
                 }
             }
             MouseAction::Color(index) => {
@@ -1350,12 +1481,127 @@ impl App {
         Ok(())
     }
 
+    /// 圆盘坐标 → (色相, 饱和度)：横向是色相环，离圆心越远越饱和。
+    fn pick_aura(&mut self, column: u16, row: u16) {
+        let Some(rect) = *self.aura_disc.borrow() else {
+            return;
+        };
+        if rect.width < 4 || rect.height < 3 {
+            return;
+        }
+        let cx = rect.x as f32 + rect.width as f32 / 2.0;
+        let cy = rect.y as f32 + rect.height as f32 / 2.0;
+        let rx = (rect.width as f32 / 2.0 - 0.5).max(0.5);
+        let ry = (rect.height as f32 / 2.0 - 0.5).max(0.5);
+        let sx = (column as f32 + 0.5 - cx) / rx;
+        let sy = (row as f32 + 0.5 - cy) / ry;
+        let radius = (sx * sx + sy * sy).sqrt();
+        let saturation = radius.min(1.0);
+        let hue = sy.atan2(sx).to_degrees();
+        self.aura_pick = (hue, saturation);
+    }
+
+    pub fn aura_pick_hex(&self) -> String {
+        crate::util::hsv_to_hex(self.aura_pick.0, self.aura_pick.1, 1.0)
+    }
+
+    fn apply_aura_pick(&mut self) -> Result<()> {
+        let hex = self.aura_pick_hex();
+        asus::aura_static(&hex)?;
+        self.refresh_current_tab();
+        self.status = format!("灯效：静态自定义色 {hex}");
+        self.status_err = false;
+        Ok(())
+    }
+
+    /// 充电上限滑条坐标 → 百分比（20–100），按 5 的倍数取整。
+    fn set_limit_from(&mut self, column: u16) {
+        let Some(rect) = *self.limit_bar.borrow() else {
+            return;
+        };
+        if rect.width == 0 {
+            return;
+        }
+        let ratio =
+            ((column.saturating_sub(rect.x)) as f32 / rect.width.max(1) as f32).clamp(0.0, 1.0);
+        let percent = (20.0 + ratio * 80.0).round() as u8;
+        let percent = ((percent as i32 + 2) / 5 * 5).clamp(20, 100) as u8;
+        if self.limit_edit != percent {
+            self.limit_edit = percent;
+            self.limit_dirty = true;
+            self.status = format!("充电上限 → {percent}%（Enter 应用）");
+            self.status_err = false;
+        }
+    }
+
+    /// 作图区横坐标 → 最近的温控点下标。
+    fn fan_index_at(&self, column: u16) -> Option<usize> {
+        let edit = self.fan_edit.as_ref()?;
+        let rect = (*self.fan_plot.borrow())?;
+        if rect.width == 0 || edit.temp.is_empty() {
+            return None;
+        }
+        let ratio =
+            ((column.saturating_sub(rect.x)) as f32 / rect.width.max(1) as f32).clamp(0.0, 1.0);
+        let temp = 20.0 + ratio * 80.0;
+        edit.temp
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                (**a as f32 - temp)
+                    .abs()
+                    .total_cmp(&(**b as f32 - temp).abs())
+            })
+            .map(|(index, _)| index)
+    }
+
+    /// 作图区纵坐标 → PWM，写进正在拖的那个点。
+    fn fan_drag_to(&mut self, row: u16) {
+        let Some(index) = self.fan_drag else {
+            return;
+        };
+        let Some(rect) = *self.fan_plot.borrow() else {
+            return;
+        };
+        if rect.height == 0 {
+            return;
+        }
+        let ratio =
+            ((row.saturating_sub(rect.y)) as f32 / (rect.height - 1).max(1) as f32).clamp(0.0, 1.0);
+        let pwm = ((1.0 - ratio) * 255.0).round() as u8;
+        let Some(edit) = self.fan_edit.as_mut() else {
+            return;
+        };
+        if let Some(slot) = edit.pwm.get_mut(index)
+            && *slot != pwm
+        {
+            *slot = pwm;
+            edit.dirty = true;
+            edit.sel = index;
+            self.status = format!(
+                "{}:{}°C → PWM {pwm}",
+                edit.fan.to_uppercase(),
+                edit.temp[index]
+            );
+            self.status_err = false;
+        }
+    }
+
     fn adjust_power(&mut self, delta: i32) {
         let Some(field) = self.power.get_mut(self.power_sel) else {
             return;
         };
-        field.value = (field.value + delta).clamp(field.min, field.max);
+        if !field.writable() {
+            self.status = format!("{}：固件不可调（min = max）", field.label);
+            self.status_err = true;
+            return;
+        }
+        // 不用 i32::clamp：min > max 时它会 panic，固件偶尔真的这么报。
+        let (lo, hi) = (field.min.min(field.max), field.min.max(field.max));
+        field.value = (field.value + delta).clamp(lo, hi);
         self.power_dirty = true;
+        self.status = format!("{} → {} {}", field.label, field.value, field.unit);
+        self.status_err = false;
     }
 
     fn power_summary(&self) -> String {
@@ -1686,6 +1932,9 @@ impl App {
                 self.refresh_current_tab();
                 self.status = format!("灯效：静态 {name}");
                 self.status_err = false;
+            }
+            KeyCode::Char('C') => {
+                self.apply_aura_pick()?;
             }
             _ => {}
         }
@@ -2240,7 +2489,8 @@ impl App {
                     .cloned()
                     .ok_or_else(|| anyhow!("没有这个预设"))?;
                 asus::profile_set(preset.profile)?;
-                let installed: Vec<&str> = self.attrs.iter().map(|a| a.name.as_str()).collect();
+                // 预设里的值来自别的机型也很常见，逐项写入并跳过固件不接受的项。
+                let mut problems = Vec::new();
                 for (key, value) in [
                     ("ppt_pl1_spl", preset.pl1),
                     ("ppt_pl2_sppt", preset.pl2),
@@ -2249,30 +2499,78 @@ impl App {
                     ("nv_dynamic_boost", preset.gpu_boost),
                     ("nv_temp_target", preset.gpu_temp),
                 ] {
-                    if installed.contains(&key) {
-                        asus::armoury_set(key, value)?;
+                    let Some(field) = self.power.iter().find(|field| field.key == key) else {
+                        continue;
+                    };
+                    let candidate = asus::PowerField {
+                        value,
+                        ..field.clone()
+                    };
+                    match asus::set_power_field(&candidate) {
+                        asus::SetOutcome::Applied(_) => {}
+                        asus::SetOutcome::Skipped(why) => {
+                            problems.push(format!("{} 跳过（{why}）", field.label))
+                        }
+                        asus::SetOutcome::Failed(err) => {
+                            problems.push(format!("{} 失败（{err}）", field.label))
+                        }
                     }
                 }
                 self.power_dirty = false;
-                self.status = format!("已套用「{}」预设到{}模式", preset.name, preset.profile.zh());
+                self.request_core();
+                if problems.is_empty() {
+                    self.status_err = false;
+                    self.status =
+                        format!("已套用「{}」预设到{}模式", preset.name, preset.profile.zh());
+                } else {
+                    self.status_err = true;
+                    self.status =
+                        format!("已套用「{}」预设，但：{}", preset.name, problems.join("；"));
+                }
             }
             Pending::PowerApply => {
                 if self.power.is_empty() {
                     bail!("没有可写的功耗属性");
                 }
+                let mut applied = Vec::new();
+                let mut problems = Vec::new();
                 let mut max_pl3 = 0;
-                for field in &self.power {
-                    asus::armoury_set(field.key, field.value)?;
-                    if field.key == "ppt_pl3_fppt" {
-                        max_pl3 = field.value;
+                for field in self.power.clone() {
+                    match asus::set_power_field(&field) {
+                        asus::SetOutcome::Applied(value) => {
+                            applied.push(format!("{} {}", field.label, value));
+                            if field.key == "ppt_pl3_fppt" {
+                                max_pl3 = value;
+                            }
+                        }
+                        asus::SetOutcome::Skipped(why) => {
+                            problems.push(format!("{} 跳过（{why}）", field.label));
+                        }
+                        asus::SetOutcome::Failed(err) => {
+                            problems.push(format!("{} 失败（{err}）", field.label));
+                        }
                     }
                 }
                 self.power_dirty = false;
-                self.status = if max_pl3 > 65 {
-                    format!("功耗已应用（PL3 {max_pl3}W，高于 65W，注意温度）")
+                if applied.is_empty() {
+                    bail!("所有字段都没写进去：{}", problems.join("；"));
+                }
+                let mut status = format!("已写入 {} 项：{}", applied.len(), applied.join("、"));
+                if max_pl3 > 65 {
+                    status.push_str(&format!(
+                        "
+PL3 {max_pl3}W 高于 65W，注意温度"
+                    ));
+                }
+                if !problems.is_empty() {
+                    status.push('\n');
+                    status.push_str(&problems.join("\n"));
+                    self.status_err = true;
                 } else {
-                    "功耗已应用并持久化".into()
-                };
+                    self.status_err = false;
+                }
+                self.status = status;
+                self.request_core();
             }
             Pending::BatteryLimit(limit) => {
                 asus::battery_limit(limit)?;
@@ -2505,6 +2803,7 @@ impl App {
                 profile: asus::profile_get().map_err(|err| format!("{err:#}")),
                 battery: asus::battery_info().map_err(|err| format!("{err:#}")),
                 attrs: asus::armoury().map_err(|err| format!("{err:#}")),
+                pstate: crate::sys::pstate(),
                 tuning: asus::profile_tuning().unwrap_or(false),
             };
             let _ = tx.send(snapshot);
@@ -2545,6 +2844,7 @@ impl App {
                         }
                         Err(err) => errors.push(format!("功耗：{err}")),
                     }
+                    self.pstate = snapshot.pstate;
                     self.tuning = snapshot.tuning;
                     if !self.core_initialized {
                         self.core_initialized = true;
@@ -2819,5 +3119,120 @@ mod tests {
         assert_eq!(hist.len(), HISTORY);
         assert_eq!(*hist.front().unwrap(), 5);
         assert_eq!(*hist.back().unwrap(), (HISTORY + 4) as u64);
+    }
+}
+
+#[cfg(test)]
+mod mouse_tests {
+    use super::*;
+
+    fn app() -> App {
+        let cfg = Config::default();
+        let report = deps::Report {
+            distro: String::new(),
+            vendor: String::new(),
+            product: String::new(),
+            laptop: false,
+            asus_hardware: false,
+            checks: Vec::new(),
+        };
+        App::new(cfg, report)
+    }
+
+    #[test]
+    fn wheel_over_battery_bar_steps_limit() {
+        let mut app = app();
+        app.limit_edit = 60;
+        app.mouse_targets.borrow_mut().push(MouseTarget {
+            rect: Rect::new(10, 10, 20, 1),
+            action: MouseAction::BatteryLimit,
+        });
+        app.scroll_at(15, 10, 1).unwrap();
+        assert_eq!(app.limit_edit, 65);
+        assert!(app.limit_dirty);
+        assert_eq!(app.hover, Some(MouseAction::BatteryLimit));
+
+        app.scroll_at(15, 10, -1).unwrap();
+        assert_eq!(app.limit_edit, 60);
+
+        // 指针在别处时不调值，只走普通滚动
+        app.scroll_at(5, 30, 1).unwrap();
+        assert_eq!(app.limit_edit, 60);
+    }
+
+    #[test]
+    fn wheel_over_power_row_adjusts_value() {
+        let mut app = app();
+        app.tab = Tab::Performance;
+        app.power = vec![asus::PowerField {
+            key: "ppt_pl1_spl",
+            label: "PL1",
+            unit: "W",
+            value: 30,
+            min: 15,
+            max: 65,
+        }];
+        app.mouse_targets.borrow_mut().push(MouseTarget {
+            rect: Rect::new(40, 20, 30, 1),
+            action: MouseAction::PowerField(0),
+        });
+        app.scroll_at(45, 20, 1).unwrap();
+        assert_eq!(app.power[0].value, 31);
+        assert_eq!(app.power_sel, 0);
+        assert_eq!(app.perf_focus, PerfFocus::Power);
+        app.scroll_at(45, 20, -1).unwrap();
+        assert_eq!(app.power[0].value, 30);
+    }
+
+    #[test]
+    fn unwritable_power_field_ignores_wheel() {
+        let mut app = app();
+        app.power = vec![asus::PowerField {
+            key: "nv_tgp",
+            label: "TGP",
+            unit: "W",
+            value: 55,
+            min: 0,
+            max: 0,
+        }];
+        app.mouse_targets.borrow_mut().push(MouseTarget {
+            rect: Rect::new(0, 0, 40, 1),
+            action: MouseAction::PowerField(0),
+        });
+        app.scroll_at(5, 0, 1).unwrap();
+        assert_eq!(app.power[0].value, 55, "min == max 时不能改值");
+        assert!(app.status.contains("固件不可调"));
+    }
+
+    #[test]
+    fn fan_plot_drag_sets_pwm_from_row() {
+        let mut app = app();
+        app.fan_edit = Some(FanEdit {
+            fan: "cpu".into(),
+            temp: vec![30, 50, 70, 85],
+            pwm: vec![30, 60, 120, 200],
+            sel: 1,
+            dirty: false,
+        });
+        *app.fan_plot.borrow_mut() = Some(Rect::new(10, 10, 40, 21));
+        app.fan_drag = Some(1);
+        app.fan_drag_to(10); // 顶行 → PWM 255
+        assert_eq!(app.fan_edit.as_ref().unwrap().pwm[1], 255);
+        app.fan_drag_to(30); // 底行 → PWM 0
+        assert_eq!(app.fan_edit.as_ref().unwrap().pwm[1], 0);
+        assert!(app.fan_edit.as_ref().unwrap().dirty);
+    }
+
+    #[test]
+    fn aura_disc_maps_angle_and_radius() {
+        let mut app = app();
+        *app.aura_disc.borrow_mut() = Some(Rect::new(0, 0, 40, 20));
+        // 圆心偏右 → 0 度附近；越靠外饱和度越高
+        app.pick_aura(38, 10);
+        let (hue, sat) = app.aura_pick;
+        assert!(hue < 10.0 || hue > 350.0, "右侧应为 0 度附近，实际 {hue}");
+        assert!(sat > 0.8, "圆盘边缘接近满饱和，实际 {sat}");
+        app.pick_aura(20, 10);
+        assert!(app.aura_pick.1 < 0.2, "圆心附件饱和度应很低");
     }
 }
