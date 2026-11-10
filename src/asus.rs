@@ -1000,13 +1000,25 @@ pub fn aura_prev() -> Result<()> {
 }
 
 pub fn aura_static(colour: &str) -> Result<()> {
-    ctl(&["aura", "effect", "static", "-c", colour])?;
+    ctl(&["aura", "effect", "static", "-c", &bare_hex(colour)])?;
     Ok(())
+}
+
+/// asusctl 的颜色解析不认 `#` 前缀，界面里到处是 `#rrggbb`，写入前统一剥掉。
+pub fn bare_hex(colour: &str) -> String {
+    colour.trim().trim_start_matches('#').to_ascii_lowercase()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strips_hash_from_aura_colour() {
+        assert_eq!(bare_hex("#FF1A1A"), "ff1a1a");
+        assert_eq!(bare_hex("00ff00"), "00ff00");
+        assert_eq!(bare_hex(" #AbC "), "abc");
+    }
 
     #[test]
     fn parses_range_value() {
