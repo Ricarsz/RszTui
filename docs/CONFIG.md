@@ -44,6 +44,8 @@ rate_style = "binary"  # binary / decimal / bits
 ## 持久化
 
 - 性能模式、电池上限、PPT/TGP 写入 `/etc/asusd/asusd.ron`，由 **asusd** 在开机和 AC/电池切换时自动恢复。
+- 实际生效值落在 `asus-armoury` 固件属性（`/sys/class/firmware-attributes/asus-armoury/attributes/<项>/{current,min,max}_value`）：写前按固件 `min..max` 夹紧，写完回读 `current_value` 校验。`min == max` 的项（例如核显模式下的 `nv_tgp`、`nv_dynamic_boost`）在固件层就没有写入口，会直接跳过而不是报错。
+- `asusctl armoury list` 报的是 asusd 存盘配置，可能与固件不符（存盘值低于固件下限很常见，例如电池档 PL2 存 30、固件下限 35）。这类值界面会标黄「存盘值越界，应用会被固件拒绝」，真正的写入结果以固件 `current_value` 为准。
 - 功耗值写入当前供电模式（AC 或电池）下、当前性能模式的 tuning。想改电池那一套，拔电源再调。
 - 风扇曲线由 asusd 持久化在 `/etc/asusd/fan_curves.ron`。
 - 网络配置由 NetworkManager 持久化在 `/etc/NetworkManager/system-connections/`。
