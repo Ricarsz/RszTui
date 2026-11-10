@@ -703,21 +703,35 @@ fn power(cmd: PowerCmd, json: bool) -> Result<()> {
     let fields = asus::power_fields(&attrs);
 
     // 逐项写入：固件不接受的项跳过并报告，不再一错全废。
-    let apply = |key: &str, value: i32, notes: &mut Vec<String>| {
+    // 返回 true 表示写进固件；false 时 notes 里已有跳过/失败原因。
+    let apply = |key: &str, value: i32, notes: &mut Vec<String>| -> bool {
         let Some(field) = fields.iter().find(|field| field.key == key) else {
-            return;
+            notes.push(format!("{key} 固件没有这一项"));
+            return false;
         };
         let candidate = asus::PowerField {
             value,
             ..field.clone()
         };
         match asus::set_power_field(&candidate) {
-            asus::SetOutcome::Applied(_) => {}
+            asus::SetOutcome::Applied(v) => {
+                if v == value {
+                    notes.push(format!("{} = {v}{}", field.label, field.unit));
+                } else {
+                    notes.push(format!(
+                        "{} = {v}{}（请求 {value}，已夹到固件范围 {}..{}）",
+                        field.label, field.unit, field.min, field.max
+                    ));
+                }
+                true
+            }
             asus::SetOutcome::Skipped(why) => {
                 notes.push(format!("{} 跳过（{why}）", field.label));
+                false
             }
             asus::SetOutcome::Failed(err) => {
                 notes.push(format!("{} 失败（{err}）", field.label));
+                false
             }
         }
     };
@@ -735,12 +749,19 @@ fn power(cmd: PowerCmd, json: bool) -> Result<()> {
 
             asus::profile_set(profile)?;
             let mut notes = Vec::new();
-            apply("ppt_pl1_spl", preset.pl1, &mut notes);
-            apply("ppt_pl2_sppt", preset.pl2, &mut notes);
-            apply("ppt_pl3_fppt", preset.pl3, &mut notes);
-            apply("nv_tgp", preset.gpu_tgp, &mut notes);
-            apply("nv_dynamic_boost", preset.gpu_boost, &mut notes);
-            apply("nv_temp_target", preset.gpu_temp, &mut notes);
+            let mut applied = 0;
+            for (key, value) in [
+                ("ppt_pl1_spl", preset.pl1),
+                ("ppt_pl2_sppt", preset.pl2),
+                ("ppt_pl3_fppt", preset.pl3),
+                ("nv_tgp", preset.gpu_tgp),
+                ("nv_dynamic_boost", preset.gpu_boost),
+                ("nv_temp_target", preset.gpu_temp),
+            ] {
+                if apply(key, value, &mut notes) {
+                    applied += 1;
+                }
+            }
 
             if json {
                 println!(
@@ -764,8 +785,8 @@ fn power(cmd: PowerCmd, json: bool) -> Result<()> {
                     preset.gpu_temp
                 );
                 print_power_notes(&notes);
-                for note in &notes {
-                    println!("提示：{note}");
+                if applied == 0 {
+                    eprintln!("没有任何一项写进固件");
                 }
             }
             Ok(())
@@ -786,6 +807,7 @@ fn power(cmd: PowerCmd, json: bool) -> Result<()> {
             }
             let mut changed = Vec::new();
             let mut notes = Vec::new();
+            let mut applied = 0;
             for (key, value) in [
                 ("ppt_pl1_spl", pl1),
                 ("ppt_pl2_sppt", pl2),
@@ -795,11 +817,13 @@ fn power(cmd: PowerCmd, json: bool) -> Result<()> {
                 ("nv_temp_target", gpu_temp),
             ] {
                 if let Some(value) = value {
-                    apply(key, value, &mut notes);
+                    if apply(key, value, &mut notes) {
+                        applied += 1;
+                    }
                     changed.push((key, value));
                 }
             }
-            if !notes.is_empty() && notes.len() == changed.len() {
+            if applied == 0 {
                 bail!("没有任何一项写进固件：{}", notes.join("；"));
             }
 
@@ -814,11 +838,8 @@ fn power(cmd: PowerCmd, json: bool) -> Result<()> {
                 );
             } else {
                 print_power_notes(&notes);
-                if pl3.is_some_and(|v| v > 65) {
-                    println!("提示：PL3 高于 65W，长时间负载温度和噪音会明显上升");
-                }
-                for note in &notes {
-                    println!("提示：{note}");
+                if pl3.is_some_and(|v| v > 80) {
+                    println!("提示：PL3 高于 80W，长时间负载温度和噪音会明显上升");
                 }
             }
             Ok(())

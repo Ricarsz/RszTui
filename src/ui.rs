@@ -1567,7 +1567,7 @@ fn draw_power_fields(frame: &mut Frame, area: Rect, app: &App) {
         let note = if field.stale() {
             Some("  存盘值越界，应用会被固件拒绝")
         } else if !field.writable() {
-            Some("  dGPU 关闭时这一项没有固件接口")
+            Some("  当前供电/模式下固件没有写入口")
         } else {
             None
         };

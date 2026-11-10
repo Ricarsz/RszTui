@@ -2507,6 +2507,9 @@ impl App {
                         ..field.clone()
                     };
                     match asus::set_power_field(&candidate) {
+                        asus::SetOutcome::Applied(v) if v != value => {
+                            problems.push(format!("{} 夹到 {v}（请求 {value}）", field.label))
+                        }
                         asus::SetOutcome::Applied(_) => {}
                         asus::SetOutcome::Skipped(why) => {
                             problems.push(format!("{} 跳过（{why}）", field.label))
@@ -2538,7 +2541,14 @@ impl App {
                 for field in self.power.clone() {
                     match asus::set_power_field(&field) {
                         asus::SetOutcome::Applied(value) => {
-                            applied.push(format!("{} {}", field.label, value));
+                            if value != field.value {
+                                applied.push(format!(
+                                    "{} {value}（请求 {}）",
+                                    field.label, field.value
+                                ));
+                            } else {
+                                applied.push(format!("{} {}", field.label, value));
+                            }
                             if field.key == "ppt_pl3_fppt" {
                                 max_pl3 = value;
                             }

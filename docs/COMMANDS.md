@@ -25,7 +25,7 @@ sudo rsztui power apply --pl1 45 --pl2 55 --pl3 65
 sudo rsztui power apply --gpu-tgp 70 --gpu-temp 80
 ```
 
-写功耗前会先读 `/sys/class/firmware-attributes/asus-armoury/attributes/<项>/` 的 min/max/current：越界值会被夹到固件范围，超出 `min == max` 的项（例如核显模式下 `nv_tgp`、`nv_dynamic_boost`）直接跳过。每项写完会回读 `current_value` 校验，`power apply`/`power preset` 逐项输出 `已写入`/`跳过`/`失败`，不再因为某一项写不进而整条命令失败——全部失败时才返回非零，并在 stderr 提示「没有任何一项写进固件」。
+写功耗前会先读 `/sys/class/firmware-attributes/asus-armoury/attributes/<项>/` 的 min/max/current：越界值会被夹到固件范围并在输出里标出请求值（如 `= 35（请求 20）`），`min == max` 的项（固件当前没给写入口，典型是电池供电且 dGPU 关闭时的 `nv_tgp`）直接跳过。固件范围随供电/模式变化，插电后同一项可能又可写。每项写完会回读 `current_value` 校验，`power apply`/`power preset` 逐项输出 `已写入`/`跳过`/`失败`，不再因为某一项写不进而整条命令失败——全部失败时才返回非零，并在 stderr 提示「没有任何一项写进固件」。
 
 ## 电池
 
