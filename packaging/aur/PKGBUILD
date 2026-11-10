@@ -13,7 +13,7 @@ optdepends=(
   'networkmanager: Wi-Fi, IPv4/DNS, VPN and hotspot management'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('347484592971afc475d2318cc8e134882556dee3722eb187e44d9dcda830b55b')
+sha256sums=('4afd83dae3ed473616f7fd9b19f68bcd820641598cb2c6d839170c57be9eade0')
 
 prepare() {
   cd "RszTui-$pkgver"
