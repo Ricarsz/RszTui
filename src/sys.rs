@@ -1,6 +1,6 @@
 use std::ffi::CString;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::gpu;
@@ -67,6 +67,10 @@ pub struct Collector {
     prev_energy: Option<(u64, Instant)>,
     prev_ifaces: Vec<(String, u64, u64)>,
     gpus: Option<Vec<gpu::Gpu>>,
+    /// hwmon 拓扑（chip、标签、文件路径）整个会话不变，只建一次。
+    hwmon: Option<HwmonCache>,
+    /// 各核 scaling_cur_freq 路径，首次枚举后复用，省掉每秒 read_dir。
+    freq_paths: Option<Vec<PathBuf>>,
 }
 
 impl Collector {
@@ -113,11 +117,28 @@ impl Collector {
             snap.swap_total = mem.swap_total;
         }
 
-        let (mhz, mhz_max) = cpu_freqs();
-        snap.cpu_mhz = mhz;
-        snap.cpu_mhz_max = mhz_max;
+        if self.freq_paths.is_none() {
+            self.freq_paths = Some(cpu_freq_paths());
+        }
+        let mut freqs = self
+            .freq_paths
+            .as_deref()
+            .map(cpu_freqs_from)
+            .unwrap_or((None, None));
+        if freqs.0.is_none() {
+            freqs = cpuinfo_freqs();
+        }
+        snap.cpu_mhz = freqs.0;
+        snap.cpu_mhz_max = freqs.1;
         snap.cpu_power_w = self.cpu_power(now);
-        snap.fans = fan_speeds();
+        if self.hwmon.is_none() {
+            self.hwmon = Some(HwmonCache::build());
+        }
+        snap.fans = self
+            .hwmon
+            .as_ref()
+            .map(HwmonCache::fans)
+            .unwrap_or_default();
         if self.gpus.is_none() {
             self.gpus = Some(gpu::discover());
         }
@@ -175,7 +196,11 @@ impl Collector {
         self.prev_net = Some((rx_total, tx_total));
         self.prev_time = Some(now);
 
-        let temps = temperatures(&gpus);
+        let temps = self
+            .hwmon
+            .as_ref()
+            .map(|hwmon| hwmon.temps(&gpus))
+            .unwrap_or_default();
         snap.max_temp = temps.iter().map(|(_, v)| *v).reduce(f32::max);
         snap.temps = temps;
         snap.gpus = gpus;
@@ -297,41 +322,59 @@ fn mem_info() -> Option<MemInfo> {
     })
 }
 
-/// 每核当前频率（GHz 平均值、最大值）。优先 cpufreq（AMD P-State 下比
-/// `/proc/cpuinfo` 的估算值准确得多），读不到时退回 cpuinfo。
-fn cpu_freqs() -> (Option<f32>, Option<f32>) {
+/// 首次枚举各核 scaling_cur_freq 路径；之后每周期只读这些文件（值会变，
+/// 路径不变），省掉每秒一次 read_dir 与文件名解析。
+fn cpu_freq_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let Ok(entries) = fs::read_dir("/sys/devices/system/cpu") else {
+        return paths;
+    };
+    for entry in entries.filter_map(|entry| entry.ok()) {
+        let name = entry.file_name();
+        let Some(index) = name.to_str().and_then(|name| name.strip_prefix("cpu")) else {
+            continue;
+        };
+        if index.is_empty() || !index.bytes().all(|byte| byte.is_ascii_digit()) {
+            continue;
+        }
+        paths.push(entry.path().join("cpufreq/scaling_cur_freq"));
+    }
+    paths
+}
+
+/// 按缓存路径读每核频率，返回（平均值、最大值）GHz。
+fn cpu_freqs_from(paths: &[PathBuf]) -> (Option<f32>, Option<f32>) {
     let mut sum = 0.0f64;
     let mut max = 0.0f64;
     let mut count = 0u32;
-    if let Ok(entries) = fs::read_dir("/sys/devices/system/cpu") {
-        for entry in entries.filter_map(|entry| entry.ok()) {
-            let name = entry.file_name();
-            let Some(index) = name.to_str().and_then(|name| name.strip_prefix("cpu")) else {
-                continue;
-            };
-            if index.is_empty() || !index.bytes().all(|byte| byte.is_ascii_digit()) {
-                continue;
-            }
-            let Ok(text) = fs::read_to_string(entry.path().join("cpufreq/scaling_cur_freq")) else {
-                continue;
-            };
-            let Ok(khz) = text.trim().parse::<f64>() else {
-                continue;
-            };
-            sum += khz;
-            max = max.max(khz);
-            count += 1;
-        }
+    for path in paths {
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(khz) = text.trim().parse::<f64>() else {
+            continue;
+        };
+        sum += khz;
+        max = max.max(khz);
+        count += 1;
     }
-    if count > 0 {
-        return (
-            Some((sum / count as f64 / 1_000_000.0) as f32),
-            Some((max / 1_000_000.0) as f32),
-        );
+    if count == 0 {
+        return (None, None);
     }
+    (
+        Some((sum / count as f64 / 1_000_000.0) as f32),
+        Some((max / 1_000_000.0) as f32),
+    )
+}
+
+/// 没有 cpufreq 时的兜底：读 /proc/cpuinfo 的 MHz 估算。
+fn cpuinfo_freqs() -> (Option<f32>, Option<f32>) {
     let Ok(text) = fs::read_to_string("/proc/cpuinfo") else {
         return (None, None);
     };
+    let mut sum = 0.0f64;
+    let mut max = 0.0f64;
+    let mut count = 0u32;
     for line in text.lines() {
         if let Some(value) = line.strip_prefix("cpu MHz")
             && let Some(value) = value.split(':').nth(1)
@@ -409,51 +452,221 @@ fn is_virtual_iface(name: &str) -> bool {
     PREFIXES.iter().any(|prefix| name.starts_with(prefix))
 }
 
-fn fan_speeds() -> Vec<(String, u32)> {
-    let mut result = Vec::new();
-    let Ok(entries) = fs::read_dir("/sys/class/hwmon") else {
-        return result;
-    };
-    for entry in entries.filter_map(|e| e.ok()) {
-        let dir = entry.path();
-        let chip = fs::read_to_string(dir.join("name"))
-            .map(|v| v.trim().to_string())
-            .unwrap_or_default();
-        // asus 提供 cpu_fan / gpu_fan 两路实际转速。
-        if chip != "asus" {
-            continue;
-        }
-        let Ok(files) = fs::read_dir(&dir) else {
-            continue;
+/// hwmon 拓扑缓存：chip 名、标签与 `*_input` 路径整个会话不变，首次采样时
+/// 建好；之后每周期只读数值文件，省掉重复的 read_dir、`name`/`_label` 读取，
+/// 以及对内存 SPD 的 canonicalize。
+#[derive(Default)]
+struct HwmonCache {
+    temps: Vec<TempProbe>,
+    fans: Vec<FanProbe>,
+}
+
+struct TempProbe {
+    /// 一般只有 1 个；nvme 存该盘全部 temp 文件，composite 时第一个是 temp1。
+    paths: Vec<PathBuf>,
+    label: String,
+    rank: u8,
+    /// nvme：优先取 temp1（Composite），取不到再取组内最大。
+    composite: bool,
+}
+
+struct FanProbe {
+    path: PathBuf,
+    label: String,
+}
+
+impl HwmonCache {
+    fn build() -> Self {
+        let mut cache = HwmonCache::default();
+        let Ok(entries) = fs::read_dir("/sys/class/hwmon") else {
+            return cache;
         };
-        for file in files.filter_map(|e| e.ok()) {
-            let name = file.file_name().to_string_lossy().into_owned();
-            let Some(stem) = name.strip_suffix("_input") else {
-                continue;
-            };
-            if !stem.starts_with("fan") {
-                continue;
-            }
-            let Ok(raw) = fs::read_to_string(file.path()) else {
-                continue;
-            };
-            let Ok(rpm) = raw.trim().parse::<u32>() else {
-                continue;
-            };
-            let label = fs::read_to_string(dir.join(format!("{stem}_label")))
+        for entry in entries.filter_map(|e| e.ok()) {
+            let dir = entry.path();
+            let chip = fs::read_to_string(dir.join("name"))
                 .map(|v| v.trim().to_string())
                 .unwrap_or_default();
-            let label = match label.as_str() {
-                "cpu_fan" => "CPU".to_string(),
-                "gpu_fan" => "GPU".to_string(),
-                "" => format!("风扇{}", &stem[3..]),
-                other => other.to_string(),
-            };
-            result.push((label, rpm));
+            if chip.is_empty() {
+                continue;
+            }
+
+            // asus 提供 cpu_fan / gpu_fan 两路实际转速。
+            if chip == "asus"
+                && let Ok(files) = fs::read_dir(&dir)
+            {
+                for file in files.filter_map(|e| e.ok()) {
+                    let name = file.file_name().to_string_lossy().into_owned();
+                    let Some(stem) = name.strip_suffix("_input") else {
+                        continue;
+                    };
+                    if !stem.starts_with("fan") {
+                        continue;
+                    }
+                    let label = fs::read_to_string(dir.join(format!("{stem}_label")))
+                        .map(|v| v.trim().to_string())
+                        .unwrap_or_default();
+                    let label = match label.as_str() {
+                        "cpu_fan" => "CPU".to_string(),
+                        "gpu_fan" => "GPU".to_string(),
+                        "" => format!("风扇{}", &stem[3..]),
+                        other => other.to_string(),
+                    };
+                    cache.fans.push(FanProbe {
+                        path: file.path(),
+                        label,
+                    });
+                }
+            }
+
+            // GPU 温度由 gpu 模块按设备归集，避免把核显/独显的传感器混在一起。
+            if chip == "amdgpu" || chip == "nvidia" {
+                continue;
+            }
+
+            let mut sensors: Vec<(String, PathBuf)> = Vec::new();
+            if let Ok(files) = fs::read_dir(&dir) {
+                for file in files.filter_map(|e| e.ok()) {
+                    let name = file.file_name().to_string_lossy().into_owned();
+                    let Some(stem) = name.strip_suffix("_input") else {
+                        continue;
+                    };
+                    if !stem.starts_with("temp") {
+                        continue;
+                    }
+                    sensors.push((stem.to_string(), file.path()));
+                }
+            }
+            if sensors.is_empty() {
+                continue;
+            }
+
+            if chip == "nvme" {
+                // Composite（temp1）是 Mission Center 等工具显示的那一路；
+                // Sensor 1/2 是闪存颗粒，个别情况下会高出 10–15°C。
+                let composite = sensors.iter().any(|(stem, _)| stem == "temp1");
+                let mut paths = Vec::with_capacity(sensors.len());
+                if let Some((_, path)) = sensors.iter().find(|(stem, _)| stem == "temp1") {
+                    paths.push(path.clone());
+                }
+                for (stem, path) in &sensors {
+                    if stem != "temp1" {
+                        paths.push(path.clone());
+                    }
+                }
+                cache.temps.push(TempProbe {
+                    paths,
+                    label: nvme_label(&dir),
+                    rank: 3,
+                    composite,
+                });
+                continue;
+            }
+
+            for (stem, path) in sensors {
+                let label = fs::read_to_string(dir.join(format!("{stem}_label")))
+                    .map(|v| v.trim().to_string())
+                    .unwrap_or_default();
+                let (rank, label) = match chip.as_str() {
+                    "k10temp" => (
+                        0,
+                        if label.is_empty() {
+                            "CPU".to_string()
+                        } else {
+                            format!("CPU {label}")
+                        },
+                    ),
+                    "spd5118" => (4, dimm_label(&dir)),
+                    "acpitz" => (5, "ACPI 温区".to_string()),
+                    _ => (6, temperature_label(&chip, &label)),
+                };
+                cache.temps.push(TempProbe {
+                    paths: vec![path],
+                    label,
+                    rank,
+                    composite: false,
+                });
+            }
         }
+        cache
     }
-    result.sort_by(|a, b| a.0.cmp(&b.0));
-    result
+
+    fn fans(&self) -> Vec<(String, u32)> {
+        let mut result: Vec<(String, u32)> = self
+            .fans
+            .iter()
+            .filter_map(|probe| {
+                let raw = fs::read_to_string(&probe.path).ok()?;
+                let rpm = raw.trim().parse::<u32>().ok()?;
+                Some((probe.label.clone(), rpm))
+            })
+            .collect();
+        result.sort_by(|a, b| a.0.cmp(&b.0));
+        result
+    }
+
+    /// 温度条目：优先级只决定显示顺序（CPU → GPU → 磁盘 → 内存 → ACPI），
+    /// 不再单纯按数值排序，避免每个采样周期列表整体跳动。
+    fn temps(&self, gpus: &[gpu::Status]) -> Vec<(String, f32)> {
+        let mut rated: Vec<(u8, String, f32)> = Vec::new();
+        for probe in &self.temps {
+            let celsius = if probe.composite {
+                probe
+                    .paths
+                    .first()
+                    .and_then(|path| read_celsius(path))
+                    .or_else(|| {
+                        probe
+                            .paths
+                            .iter()
+                            .skip(1)
+                            .filter_map(|path| read_celsius(path))
+                            .max_by(f32::total_cmp)
+                    })
+            } else {
+                probe
+                    .paths
+                    .iter()
+                    .filter_map(|path| read_celsius(path))
+                    .max_by(f32::total_cmp)
+            };
+            if let Some(celsius) = celsius {
+                push_temp(&mut rated, probe.rank, probe.label.clone(), celsius);
+            }
+        }
+
+        for status in gpus {
+            let name = status.gpu.short.clone();
+            let rank = match status.gpu.vendor {
+                gpu::Vendor::Nvidia => 1,
+                _ => 2,
+            };
+            if let Some(celsius) = status.stats.temp {
+                push_temp(&mut rated, rank, name.clone(), celsius);
+            }
+            if let Some(celsius) = status.stats.hotspot
+                && status.stats.temp != Some(celsius)
+            {
+                push_temp(&mut rated, rank, format!("{name} 热点"), celsius);
+            }
+            if let Some(celsius) = status.stats.mem_temp {
+                push_temp(&mut rated, rank, format!("{name} 显存"), celsius);
+            }
+        }
+
+        rated.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        rated.truncate(10);
+        rated
+            .into_iter()
+            .map(|(_, label, value)| (label, value))
+            .collect()
+    }
+}
+
+fn read_celsius(path: &Path) -> Option<f32> {
+    let raw = fs::read_to_string(path).ok()?;
+    let milli = raw.trim().parse::<f32>().ok()?;
+    let celsius = milli / 1000.0;
+    (0.0..150.0).contains(&celsius).then_some(celsius)
 }
 
 fn disk_usage(path: &str) -> Option<(u64, u64)> {
@@ -471,110 +684,6 @@ fn disk_usage(path: &str) -> Option<(u64, u64)> {
 
 fn read_u64(path: &Path) -> Option<u64> {
     fs::read_to_string(path).ok()?.trim().parse().ok()
-}
-
-/// 温度条目：优先级只决定显示顺序（CPU → GPU → 磁盘 → 内存 → ACPI），
-/// 不再单纯按数值排序，避免每个采样周期列表整体跳动。
-fn temperatures(gpus: &[gpu::Status]) -> Vec<(String, f32)> {
-    let mut rated: Vec<(u8, String, f32)> = Vec::new();
-    let Ok(entries) = fs::read_dir("/sys/class/hwmon") else {
-        return Vec::new();
-    };
-
-    for entry in entries.filter_map(|e| e.ok()) {
-        let dir = entry.path();
-        let chip = fs::read_to_string(dir.join("name"))
-            .map(|v| v.trim().to_string())
-            .unwrap_or_else(|_| "sensor".into());
-        // GPU 温度由 gpu 模块按设备归集，避免把核显/独显的传感器混在一起。
-        if chip == "amdgpu" || chip == "nvidia" {
-            continue;
-        }
-        let Ok(files) = fs::read_dir(&dir) else {
-            continue;
-        };
-        let mut sensors: Vec<(String, String, f32)> = Vec::new();
-        for file in files.filter_map(|e| e.ok()) {
-            let name = file.file_name().to_string_lossy().into_owned();
-            let Some(stem) = name.strip_suffix("_input") else {
-                continue;
-            };
-            if !stem.starts_with("temp") {
-                continue;
-            }
-            let Ok(raw) = fs::read_to_string(file.path()) else {
-                continue;
-            };
-            let Ok(milli) = raw.trim().parse::<f32>() else {
-                continue;
-            };
-            let celsius = milli / 1000.0;
-            if !(0.0..150.0).contains(&celsius) {
-                continue;
-            }
-            let label = fs::read_to_string(dir.join(format!("{stem}_label")))
-                .map(|v| v.trim().to_string())
-                .unwrap_or_default();
-            sensors.push((stem.to_string(), label, celsius));
-        }
-        if sensors.is_empty() {
-            continue;
-        }
-
-        if chip == "nvme" {
-            // Composite（temp1）是 Mission Center 等工具显示的那一路；
-            // Sensor 1/2 是闪存颗粒，个别情况下会高出 10–15°C。
-            let composite = sensors.iter().find(|(stem, ..)| stem == "temp1");
-            let fallback = sensors.iter().max_by(|a, b| a.2.total_cmp(&b.2));
-            if let Some((_, _, celsius)) = composite.or(fallback) {
-                push_temp(&mut rated, 3, nvme_label(&dir), *celsius);
-            }
-            continue;
-        }
-
-        for (_stem, sensor, celsius) in sensors {
-            let (rank, label) = match chip.as_str() {
-                "k10temp" => (
-                    0,
-                    if sensor.is_empty() {
-                        "CPU".to_string()
-                    } else {
-                        format!("CPU {sensor}")
-                    },
-                ),
-                "spd5118" => (4, dimm_label(&dir)),
-                "acpitz" => (5, "ACPI 温区".to_string()),
-                _ => (6, temperature_label(&chip, &sensor)),
-            };
-            push_temp(&mut rated, rank, label, celsius);
-        }
-    }
-
-    for status in gpus {
-        let name = status.gpu.short.clone();
-        let rank = match status.gpu.vendor {
-            gpu::Vendor::Nvidia => 1,
-            _ => 2,
-        };
-        if let Some(celsius) = status.stats.temp {
-            push_temp(&mut rated, rank, name.clone(), celsius);
-        }
-        if let Some(celsius) = status.stats.hotspot
-            && status.stats.temp != Some(celsius)
-        {
-            push_temp(&mut rated, rank, format!("{name} 热点"), celsius);
-        }
-        if let Some(celsius) = status.stats.mem_temp {
-            push_temp(&mut rated, rank, format!("{name} 显存"), celsius);
-        }
-    }
-
-    rated.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-    rated.truncate(10);
-    rated
-        .into_iter()
-        .map(|(_, label, value)| (label, value))
-        .collect()
 }
 
 fn push_temp(list: &mut Vec<(u8, String, f32)>, rank: u8, label: String, celsius: f32) {
@@ -629,6 +738,33 @@ mod net_tests {
         assert!(super::is_virtual_iface("tun0"));
         assert!(!super::is_virtual_iface("enp3s0"));
         assert!(!super::is_virtual_iface("wlan0"));
+    }
+}
+
+#[cfg(test)]
+mod hwmon_tests {
+    use super::*;
+
+    #[test]
+    fn celsius_filter_rejects_out_of_range() {
+        let path =
+            std::env::temp_dir().join(format!("rsztui-celsius-{}.txt", std::process::id()));
+        std::fs::write(&path, "45000\n").unwrap();
+        assert_eq!(read_celsius(&path), Some(45.0));
+        std::fs::write(&path, "200000\n").unwrap();
+        assert_eq!(read_celsius(&path), None, "超出 0–150°C 的读数应被丢弃");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hwmon_cache_builds_and_caps_temps() {
+        let cache = HwmonCache::build();
+        let temps = cache.temps(&[]);
+        assert!(temps.len() <= 10, "温度条目应被截断到 10 个");
+        let fans = cache.fans();
+        let mut sorted = fans.clone();
+        sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(fans, sorted, "风扇条目应按名字稳定排序");
     }
 }
 

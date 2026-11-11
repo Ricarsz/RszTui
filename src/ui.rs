@@ -2134,6 +2134,15 @@ fn draw_fan_graph(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(" 温度 → / PWM ↑", Style::new().fg(pal().dim)),
     ]);
 
+    // 可拖拽点的视觉状态：选中 / 悬停 / 正在拖，画布与列表共用同一套下标。
+    let sel_index = app.fan_edit.as_ref().map(|e| e.sel);
+    let drag_index = app.fan_drag;
+    let hover_index = match app.hover {
+        Some(MouseAction::FanPoint(index)) => Some(index),
+        _ => None,
+    };
+    let accent = pal().accent;
+
     let canvas = Canvas::default()
         .block(panel(title))
         .background_color(graph_bg)
@@ -2226,13 +2235,28 @@ fn draw_fan_graph(frame: &mut Frame, area: Rect, app: &App) {
                         });
                     }
                 }
-                for (x, y) in &coords {
-                    ctx.draw(&Circle::new(
-                        *x,
-                        *y,
-                        1.6,
-                        if *editing { Color::White } else { *color },
-                    ));
+                for (idx, (x, y)) in coords.iter().enumerate() {
+                    if *editing {
+                        let dragging = drag_index == Some(idx);
+                        let hovered = hover_index == Some(idx);
+                        let selected = sel_index == Some(idx);
+                        let (radius, pt) = if dragging {
+                            (3.2, Color::White)
+                        } else if hovered {
+                            (2.6, accent)
+                        } else if selected {
+                            (2.4, accent)
+                        } else {
+                            (1.8, Color::White)
+                        };
+                        ctx.draw(&Circle::new(*x, *y, radius, pt));
+                        if dragging || hovered || selected {
+                            // 外环强调「这点可抓取 / 正在抓」
+                            ctx.draw(&Circle::new(*x, *y, radius + 1.4, pt));
+                        }
+                    } else {
+                        ctx.draw(&Circle::new(*x, *y, 1.6, *color));
+                    }
                 }
             }
         });
@@ -2258,9 +2282,19 @@ fn draw_fan_graph(frame: &mut Frame, area: Rect, app: &App) {
                     as u16;
             let y =
                 plot.y + (((255 - *pwm) as f32 / 255.0) * (plot.height - 1) as f32).round() as u16;
+            // 3×3 的抓取区：比 1 行更容易点中，同时夹在作图区内，避免抢到画面外的点击。
+            let left = x.saturating_sub(1).max(plot.x);
+            let top = y.saturating_sub(1).max(plot.y);
+            let right = (x + 1).min(plot.right().saturating_sub(1));
+            let bottom = (y + 1).min(plot.bottom().saturating_sub(1));
             record_mouse(
                 app,
-                Rect::new(x.saturating_sub(1), y, 3, 1),
+                Rect::new(
+                    left,
+                    top,
+                    right.saturating_sub(left) + 1,
+                    bottom.saturating_sub(top) + 1,
+                ),
                 MouseAction::FanPoint(index),
             );
         }
@@ -2380,11 +2414,18 @@ fn draw_fan_editor(frame: &mut Frame, area: Rect, app: &App, edit: &crate::app::
             Rect::new(rows[0].x, rows[0].y + index as u16, rows[0].width, 1),
             MouseAction::FanPoint(index),
         );
+        let dragging = app.fan_drag == Some(index);
         let selected = index == edit.sel;
         let hovered = app.hover == Some(MouseAction::FanPoint(index));
-        let style =
-            row_style(selected, hovered).fg(if selected { Color::White } else { pal().text });
-        let marker = if selected { "▶" } else { " " };
+        let style = row_style(selected || dragging, hovered)
+            .fg(if selected || dragging { Color::White } else { pal().text });
+        let marker = if dragging {
+            "◆"
+        } else if selected {
+            "▶"
+        } else {
+            " "
+        };
         lines.push(Line::from(vec![
             Span::styled(format!(" {marker} 点{}  ", index + 1), style),
             Span::styled(format!("{:>3}°C", edit.temp[index]), style),
@@ -2407,7 +2448,7 @@ fn draw_fan_editor(frame: &mut Frame, area: Rect, app: &App, edit: &crate::app::
                 Style::new().fg(pal().dim),
             )),
             Line::from(Span::styled(
-                " c 切 CPU/GPU   a 写入   Esc 取消",
+                " 拖动曲线上的点=改温度/PWM   c 切换   a 写入   Esc 取消",
                 Style::new().fg(pal().dim),
             )),
         ])),
@@ -2700,6 +2741,28 @@ fn draw_aura_wheel(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
+/// 取色圆盘的圆心与半轴：渲染与拾取共用，保证标记、渐变、坐标换算同源。
+fn disc_bounds(rect: Rect) -> (f32, f32, f32, f32) {
+    let cx = rect.x as f32 + rect.width as f32 / 2.0;
+    let cy = rect.y as f32 + rect.height as f32 / 2.0;
+    let rx = (rect.width as f32 / 2.0 - 0.5).max(0.5);
+    let ry = (rect.height as f32 / 2.0 - 0.5).max(0.5);
+    (cx, cy, rx, ry)
+}
+
+/// 圆盘统一几何换算：把指针坐标相对圆心、按半轴归一化到单位圆，
+/// 返回 (归一化 x, 归一化 y, 半径)。`sub` 是半个字符的纵向偏移，
+/// 0=上半格中心、1=下半格中心、0.5=整格中心；渲染与拾取共用同一条公式。
+pub fn disc_norm(rect: Rect, column: u16, row: u16, sub: f32) -> (f32, f32, f32) {
+    if rect.width < 2 || rect.height < 2 {
+        return (0.0, 0.0, f32::INFINITY);
+    }
+    let (cx, cy, rx, ry) = disc_bounds(rect);
+    let sx = (column as f32 + 0.5 - cx) / rx;
+    let sy = (row as f32 + 0.25 + sub * 0.5 - cy) / ry;
+    (sx, sy, (sx * sx + sy * sy).sqrt())
+}
+
 struct AuraDisc {
     pick: (f32, f32),
     hovered: bool,
@@ -2710,20 +2773,15 @@ impl Widget for AuraDisc {
         if area.width < 4 || area.height < 3 {
             return;
         }
-        let cx = area.x as f32 + area.width as f32 / 2.0;
-        let cy = area.y as f32 + area.height as f32 / 2.0;
-        let rx = (area.width as f32 / 2.0 - 0.5).max(0.5);
-        let ry = (area.height as f32 / 2.0 - 0.5).max(0.5);
+        let (cx, cy, rx, ry) = disc_bounds(area);
         for row in area.y..area.bottom() {
             for column in area.x..area.right() {
-                let sx = (column as f32 + 0.5 - cx) / rx;
                 let mut upper = None;
                 let mut lower = None;
                 for (slot, sub) in [&mut upper, &mut lower].into_iter().enumerate() {
-                    let sy = (row as f32 + (slot as f32 + 0.5) / 2.0 - cy) / ry;
-                    let radius = (sx * sx + sy * sy).sqrt();
+                    let (sx, sy, radius) = disc_norm(area, column, row, slot as f32);
                     if radius <= 1.0 {
-                        let hue = sy.atan2(sx).to_degrees();
+                        let hue = sy.atan2(sx).to_degrees().rem_euclid(360.0);
                         *sub = Some(hsv_color(hue, radius));
                     }
                 }
@@ -4146,7 +4204,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         },
         Tab::Battery => " h/l 上限  Enter 应用  o 单次充满  ? 帮助",
         Tab::Fan if app.fan_edit.is_some() => {
-            " j/k 选点  h/l PWM±1  H/L ±10  [ ] 温度  c 切换  a 写入  Esc 取消"
+            " 鼠标拖点改温度/PWM  j/k 选点  h/l PWM±1  [ ]温度  c 切换  a 写入  Esc 取消"
         }
         Tab::Fan => " i/I 编辑曲线  j/k 预设  p 应用  s 保存  e 启用  ? 帮助",
         Tab::Lighting => " b 亮度  e/E 灯效  c 颜色  S 静态色  ? 帮助",

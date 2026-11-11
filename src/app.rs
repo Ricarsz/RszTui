@@ -194,23 +194,34 @@ impl FanEdit {
         if self.sel >= self.pwm.len() {
             return;
         }
-        // asusd 要求 PWM 逐点不降，这里就地夹住，避免写出会被固件拒绝的曲线。
-        let lower = if self.sel == 0 {
+        let current = self.pwm[self.sel] as i32;
+        self.set_pwm(self.sel, (current + delta).clamp(0, 255) as u8);
+    }
+
+    /// 把第 index 点的 PWM 设为 value，按 asusd「逐点不降」约束就地夹住，返回是否改动。
+    /// 键盘调整与鼠标拖拽共用，保证拖出来的曲线始终能被固件接受。
+    pub fn set_pwm(&mut self, index: usize, value: u8) -> bool {
+        if index >= self.pwm.len() {
+            return false;
+        }
+        let lower = if index == 0 {
             0
         } else {
-            self.pwm[self.sel - 1] as i32
+            self.pwm[index - 1] as i32
         };
-        let upper = if self.sel + 1 >= self.pwm.len() {
+        let upper = if index + 1 >= self.pwm.len() {
             255
         } else {
-            self.pwm[self.sel + 1] as i32
+            self.pwm[index + 1] as i32
         };
         let upper = upper.max(lower);
-        let current = self.pwm[self.sel] as i32;
-        let next = (current + delta).clamp(lower, upper);
-        if next != current {
-            self.pwm[self.sel] = next as u8;
+        let next = (value as i32).clamp(lower, upper) as u8;
+        if self.pwm[index] != next {
+            self.pwm[index] = next;
             self.dirty = true;
+            true
+        } else {
+            false
         }
     }
 
@@ -218,22 +229,33 @@ impl FanEdit {
         if self.sel >= self.temp.len() {
             return;
         }
-        let lower = if self.sel == 0 {
+        let current = self.temp[self.sel] as i32;
+        self.set_temp(self.sel, (current + delta).clamp(20, 100) as u8);
+    }
+
+    /// 把第 index 点的温度设为 value，按「逐点严格递增」约束就地夹住，返回是否改动。
+    pub fn set_temp(&mut self, index: usize, value: u8) -> bool {
+        if index >= self.temp.len() {
+            return false;
+        }
+        let lower = if index == 0 {
             20
         } else {
-            self.temp[self.sel - 1] as i32 + 1
+            self.temp[index - 1] as i32 + 1
         };
-        let upper = if self.sel + 1 >= self.temp.len() {
+        let upper = if index + 1 >= self.temp.len() {
             100
         } else {
-            self.temp[self.sel + 1] as i32 - 1
+            self.temp[index + 1] as i32 - 1
         };
-        let current = self.temp[self.sel] as i32;
         let upper = upper.max(lower);
-        let next = (current + delta).clamp(lower, upper);
-        if next != current {
-            self.temp[self.sel] = next as u8;
+        let next = (value as i32).clamp(lower, upper) as u8;
+        if self.temp[index] != next {
+            self.temp[index] = next;
             self.dirty = true;
+            true
+        } else {
+            false
         }
     }
 }
@@ -287,6 +309,19 @@ pub enum MouseAction {
     SetRateStyle(usize),
     ModalConfirm,
     ModalCancel,
+}
+
+impl MouseAction {
+    /// 可拖动控件：左键按下即捕获，指针拖出命中区也沿最后方向继续响应，松手才停。
+    fn is_draggable(self) -> bool {
+        matches!(
+            self,
+            MouseAction::AuraDisc
+                | MouseAction::BatteryLimit
+                | MouseAction::FanPlot
+                | MouseAction::FanPoint(_)
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -360,7 +395,8 @@ struct CoreSnapshot {
     battery: Result<BatteryInfo, String>,
     attrs: Result<Vec<asus::Attr>, String>,
     pstate: crate::sys::Pstate,
-    tuning: bool,
+    /// 只在显示该字段的页面（性能/设置）才查询，其他页面留 None 以省一次子进程。
+    tuning: Option<bool>,
 }
 
 pub struct App {
@@ -393,7 +429,9 @@ pub struct App {
     /// 取色圆盘与充电上限滑条的实际矩形，鼠标换算要用。
     pub aura_disc: RefCell<Option<Rect>>,
     pub limit_bar: RefCell<Option<Rect>>,
-    fan_drag: Option<usize>,
+    pub fan_drag: Option<usize>,
+    /// 按下左键锁定的可拖动控件：拖出命中区后仍按最后方向继续，与 fan_drag 一致。
+    drag_action: Option<MouseAction>,
     pub tuning: bool,
     pub pstate: crate::sys::Pstate,
     pub net_view: NetView,
@@ -521,6 +559,7 @@ impl App {
             aura_disc: RefCell::new(None),
             limit_bar: RefCell::new(None),
             fan_drag: None,
+            drag_action: None,
             tuning: false,
             pstate: crate::sys::Pstate::default(),
             net_view: NetView::Connections,
@@ -765,6 +804,7 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 let action = self.mouse_action_at(mouse.column, mouse.row);
                 self.hover = action;
+                self.drag_action = action.filter(|a| a.is_draggable());
                 if let Some(action) = action {
                     let now = Instant::now();
                     let double = self.last_mouse.as_ref().is_some_and(|(time, last)| {
@@ -776,13 +816,16 @@ impl App {
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 let action = self.mouse_action_at(mouse.column, mouse.row);
-                if action.is_some() {
-                    self.hover = action;
+                // hover 跟随实际在操纵的控件：捕获拖动移出命中区后仍保持高亮
+                let active = self.drag_action.or(action);
+                if active.is_some() {
+                    self.hover = active;
                 }
                 self.handle_drag(mouse.column, mouse.row, action)?;
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 self.fan_drag = None;
+                self.drag_action = None;
             }
             MouseEventKind::ScrollUp => self.scroll_at(mouse.column, mouse.row, -1)?,
             MouseEventKind::ScrollDown => self.scroll_at(mouse.column, mouse.row, 1)?,
@@ -876,18 +919,24 @@ impl App {
         self.handle_tab_key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
-    /// 拖动：旋钮/滑条/曲线跟着指针走，指针移出控件也继续用最后方向。
+    /// 拖动：旋钮/滑条/曲线跟着指针走。按下时锁定的控件优先，
+    /// 指针移出命中区也沿最后方向继续，直到松手才停。
     fn handle_drag(&mut self, column: u16, row: u16, action: Option<MouseAction>) -> Result<()> {
-        match action {
+        let active = self.drag_action.or(action);
+        match active {
             Some(MouseAction::AuraDisc) => self.pick_aura(column, row),
             Some(MouseAction::BatteryLimit) => self.set_limit_from(column),
             Some(MouseAction::FanPlot) | Some(MouseAction::FanPoint(_)) => {
                 if self.fan_drag.is_none() {
-                    self.fan_drag = self.fan_index_at(column);
+                    // 抓住被点中的那个点；从空白作图区起拖才按列就近取点。
+                    self.fan_drag = match active {
+                        Some(MouseAction::FanPoint(index)) => Some(index),
+                        _ => self.fan_index_at(column),
+                    };
                 }
-                self.fan_drag_to(row);
+                self.fan_drag_to(column, row);
             }
-            None if self.fan_drag.is_some() => self.fan_drag_to(row),
+            None if self.fan_drag.is_some() => self.fan_drag_to(column, row),
             _ => {}
         }
         Ok(())
@@ -984,7 +1033,7 @@ impl App {
                 let index = self.fan_index_at(at.0);
                 if self.fan_edit.is_some() {
                     self.fan_drag = index;
-                    self.fan_drag_to(at.1);
+                    self.fan_drag_to(at.0, at.1);
                 }
             }
             MouseAction::Color(index) => {
@@ -1259,6 +1308,10 @@ impl App {
         if tab == Tab::Settings {
             self.deps = deps::check();
         }
+        // 性能页的 tuning 由 core 快照提供，切过来时立刻刷新一次，避免最多 5 秒的旧值。
+        if tab == Tab::Performance {
+            self.request_core();
+        }
         self.refresh_current_tab();
     }
 
@@ -1481,24 +1534,24 @@ impl App {
         Ok(())
     }
 
-    /// 圆盘坐标 → (色相, 饱和度)：横向是色相环，离圆心越远越饱和。
+    /// 圆盘坐标 → (色相, 饱和度)：角度是色相，离圆心越远越饱和。
+    /// 指针落在圆盘外侧（含矩形四角）时沿射线投影到边界，色相连续、饱和度满。
     fn pick_aura(&mut self, column: u16, row: u16) {
         let Some(rect) = *self.aura_disc.borrow() else {
             return;
         };
-        if rect.width < 4 || rect.height < 3 {
+        let (sx, sy, radius) = ui::disc_norm(rect, column, row, 0.5);
+        if !radius.is_finite() || radius <= 0.0 {
             return;
         }
-        let cx = rect.x as f32 + rect.width as f32 / 2.0;
-        let cy = rect.y as f32 + rect.height as f32 / 2.0;
-        let rx = (rect.width as f32 / 2.0 - 0.5).max(0.5);
-        let ry = (rect.height as f32 / 2.0 - 0.5).max(0.5);
-        let sx = (column as f32 + 0.5 - cx) / rx;
-        let sy = (row as f32 + 0.5 - cy) / ry;
-        let radius = (sx * sx + sy * sy).sqrt();
-        let saturation = radius.min(1.0);
-        let hue = sy.atan2(sx).to_degrees();
-        self.aura_pick = (hue, saturation);
+        let (u, v) = if radius > 1.0 {
+            let k = 1.0 / radius;
+            (sx * k, sy * k)
+        } else {
+            (sx, sy)
+        };
+        let hue = v.atan2(u).to_degrees().rem_euclid(360.0);
+        self.aura_pick = (hue, radius.min(1.0));
     }
 
     pub fn aura_pick_hex(&self) -> String {
@@ -1555,33 +1608,37 @@ impl App {
             .map(|(index, _)| index)
     }
 
-    /// 作图区纵坐标 → PWM，写进正在拖的那个点。
-    fn fan_drag_to(&mut self, row: u16) {
+    /// 作图区坐标 → 温度/PWM，写进正在拖的那个点（2D 拖拽，均按单调约束夹住）。
+    fn fan_drag_to(&mut self, column: u16, row: u16) {
         let Some(index) = self.fan_drag else {
             return;
         };
         let Some(rect) = *self.fan_plot.borrow() else {
             return;
         };
-        if rect.height == 0 {
+        if rect.width < 2 || rect.height < 2 {
             return;
         }
-        let ratio =
-            ((row.saturating_sub(rect.y)) as f32 / (rect.height - 1).max(1) as f32).clamp(0.0, 1.0);
-        let pwm = ((1.0 - ratio) * 255.0).round() as u8;
         let Some(edit) = self.fan_edit.as_mut() else {
             return;
         };
-        if let Some(slot) = edit.pwm.get_mut(index)
-            && *slot != pwm
-        {
-            *slot = pwm;
-            edit.dirty = true;
+        // 横坐标 → 温度（20–100°C）
+        let xr = ((column.saturating_sub(rect.x)) as f32 / (rect.width - 1).max(1) as f32)
+            .clamp(0.0, 1.0);
+        let temp = (20.0 + xr * 80.0).round().clamp(20.0, 100.0) as u8;
+        // 纵坐标 → PWM（0–255，向上为高）
+        let yr = ((row.saturating_sub(rect.y)) as f32 / (rect.height - 1).max(1) as f32)
+            .clamp(0.0, 1.0);
+        let pwm = ((1.0 - yr) * 255.0).round().clamp(0.0, 255.0) as u8;
+        let temp_changed = edit.set_temp(index, temp);
+        let pwm_changed = edit.set_pwm(index, pwm);
+        if temp_changed || pwm_changed {
             edit.sel = index;
             self.status = format!(
-                "{}:{}°C → PWM {pwm}",
+                "{}:{}°C → PWM {}",
                 edit.fan.to_uppercase(),
-                edit.temp[index]
+                edit.temp[index],
+                edit.pwm[index]
             );
             self.status_err = false;
         }
@@ -2807,6 +2864,9 @@ PL3 {max_pl3}W 高于 65W，注意温度"
             return;
         }
         self.core_loading = true;
+        // profile/battery 在多处页头展示，每次都要；tuning 只在性能/设置页可见，
+        // 其他页留 None 以省掉一次 asusctl 子进程。
+        let want_tuning = matches!(self.tab, Tab::Performance | Tab::Settings);
         let tx = self.core_tx.clone();
         std::thread::spawn(move || {
             let snapshot = CoreSnapshot {
@@ -2814,7 +2874,7 @@ PL3 {max_pl3}W 高于 65W，注意温度"
                 battery: asus::battery_info().map_err(|err| format!("{err:#}")),
                 attrs: asus::armoury().map_err(|err| format!("{err:#}")),
                 pstate: crate::sys::pstate(),
-                tuning: asus::profile_tuning().unwrap_or(false),
+                tuning: want_tuning.then(|| asus::profile_tuning().unwrap_or(false)),
             };
             let _ = tx.send(snapshot);
         });
@@ -2855,7 +2915,9 @@ PL3 {max_pl3}W 高于 65W，注意温度"
                         Err(err) => errors.push(format!("功耗：{err}")),
                     }
                     self.pstate = snapshot.pstate;
-                    self.tuning = snapshot.tuning;
+                    if let Some(tuning) = snapshot.tuning {
+                        self.tuning = tuning;
+                    }
                     if !self.core_initialized {
                         self.core_initialized = true;
                         if let Some(profile) = self.profile {
@@ -3100,6 +3162,28 @@ mod tests {
     }
 
     #[test]
+    fn fan_edit_temp_stays_strictly_increasing() {
+        let curve = asus::FanCurve {
+            fan: "CPU".into(),
+            temp: vec![40, 50, 60],
+            pwm: vec![10, 20, 30],
+            enabled: true,
+        };
+        let mut edit = FanEdit::from_curve(&curve, "cpu").unwrap();
+        // 中间点往上挤到 59 就被后一点(60)-1 夹住
+        assert!(edit.set_temp(1, 90));
+        assert_eq!(edit.temp, vec![40, 59, 60]);
+        // 往下挤到 41 就被前一点(40)+1 夹住
+        assert!(edit.set_temp(1, 20));
+        assert_eq!(edit.temp, vec![40, 41, 60]);
+        // 首点下限 20，末点上限 100
+        assert!(edit.set_temp(0, 0));
+        assert_eq!(edit.temp[0], 20);
+        assert!(edit.set_temp(2, 255));
+        assert_eq!(edit.temp[2], 100);
+    }
+
+    #[test]
     fn fan_edit_pwm_stays_monotonic() {
         let curve = asus::FanCurve {
             fan: "CPU".into(),
@@ -3215,7 +3299,7 @@ mod mouse_tests {
     }
 
     #[test]
-    fn fan_plot_drag_sets_pwm_from_row() {
+    fn fan_drag_maps_row_to_pwm_within_monotonic_bounds() {
         let mut app = app();
         app.fan_edit = Some(FanEdit {
             fan: "cpu".into(),
@@ -3226,11 +3310,32 @@ mod mouse_tests {
         });
         *app.fan_plot.borrow_mut() = Some(Rect::new(10, 10, 40, 21));
         app.fan_drag = Some(1);
-        app.fan_drag_to(10); // 顶行 → PWM 255
-        assert_eq!(app.fan_edit.as_ref().unwrap().pwm[1], 255);
-        app.fan_drag_to(30); // 底行 → PWM 0
-        assert_eq!(app.fan_edit.as_ref().unwrap().pwm[1], 0);
+        // 拖到顶行：目标 PWM 255，但被下一点(120)夹住
+        app.fan_drag_to(25, 10);
+        assert_eq!(app.fan_edit.as_ref().unwrap().pwm[1], 120, "上界受下一点约束");
+        // 拖到底行：目标 PWM 0，但被上一点(30)夹住
+        app.fan_drag_to(25, 30);
+        assert_eq!(app.fan_edit.as_ref().unwrap().pwm[1], 30, "下界受上一点约束");
         assert!(app.fan_edit.as_ref().unwrap().dirty);
+    }
+
+    #[test]
+    fn fan_drag_moves_temp_horizontally_and_grabs_clicked_point() {
+        let mut app = app();
+        app.fan_edit = Some(FanEdit {
+            fan: "cpu".into(),
+            temp: vec![30, 50, 70, 85],
+            pwm: vec![30, 60, 120, 200],
+            sel: 0,
+            dirty: false,
+        });
+        *app.fan_plot.borrow_mut() = Some(Rect::new(10, 10, 40, 21));
+        // 直接抓住点 1 拖动：应锁定该点，而不是按列就近重新取点
+        app.handle_drag(10, 15, Some(MouseAction::FanPoint(1)))
+            .unwrap();
+        assert_eq!(app.fan_drag, Some(1), "应抓住被点中的那个点");
+        // 拖到最左：目标温度 20，被上一点(30)+1 夹到 31
+        assert_eq!(app.fan_edit.as_ref().unwrap().temp[1], 31);
     }
 
     #[test]
@@ -3244,5 +3349,32 @@ mod mouse_tests {
         assert!(sat > 0.8, "圆盘边缘接近满饱和，实际 {sat}");
         app.pick_aura(20, 10);
         assert!(app.aura_pick.1 < 0.2, "圆心附件饱和度应很低");
+    }
+
+    #[test]
+    fn drag_capture_keeps_picking_outside_disc() {
+        let mut app = app();
+        *app.aura_disc.borrow_mut() = Some(Rect::new(0, 0, 40, 20));
+        app.drag_action = Some(MouseAction::AuraDisc);
+        // 拖动已捕获圆盘后，指针拖出矩形之外也继续按位置取色
+        app.handle_drag(60, 10, None).unwrap();
+        let (hue, sat) = app.aura_pick;
+        assert!(sat > 0.99, "拖出圆盘应投影到满饱和，实际 {sat}");
+        assert!(hue < 10.0 || hue > 350.0, "右侧远处仍应接近 0 度，实际 {hue}");
+    }
+
+    #[test]
+    fn drag_capture_releases_on_mouse_up() {
+        let mut app = app();
+        *app.aura_disc.borrow_mut() = Some(Rect::new(0, 0, 40, 20));
+        // 松开左键后捕获解除，再拖动没有命中控件就停手
+        app.drag_action = Some(MouseAction::AuraDisc);
+        app.fan_drag = None;
+        app.handle_drag(60, 10, None).unwrap();
+        assert!(app.drag_action.is_some());
+        app.drag_action = None;
+        app.aura_pick = (180.0, 0.5);
+        app.handle_drag(60, 10, None).unwrap();
+        assert_eq!(app.aura_pick, (180.0, 0.5), "未捕获时不应再改取色");
     }
 }
