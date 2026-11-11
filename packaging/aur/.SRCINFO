@@ -12,6 +12,6 @@ pkgbase = rogtui
 	optdepends = asusctl: ASUS performance, battery, fan and lighting control
 	optdepends = networkmanager: Wi-Fi, IPv4/DNS, VPN and hotspot management
 	source = rogtui-1.4.0.tar.gz::https://github.com/Ricarsz/rogtui/archive/refs/tags/v1.4.0.tar.gz
-	sha256sums = 8c9ab5433cabbf0f9787f4a00640f333a2fabecf036f9e9c47e287b91f3d82a6
+	sha256sums = 59ab85d228e5c9343e564f04eb9c40b366d96ca598c15992ea76f3c68fa78a94
 
 pkgname = rogtui
