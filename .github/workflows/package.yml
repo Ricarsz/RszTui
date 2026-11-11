@@ -32,7 +32,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rsztui-package
+          name: rogtui-package
           path: packaging/aur/*.pkg.tar.zst
 
       - name: Attach package to release

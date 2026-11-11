@@ -10,7 +10,7 @@ build:
 	$(CARGO) build --release
 
 install: build
-	install -Dm755 target/release/rsztui $(DESTDIR)$(BINDIR)/rsztui
+	install -Dm755 target/release/rogtui $(DESTDIR)$(BINDIR)/rogtui
 
 pkg:
 	cd packaging/aur && makepkg -f --noconfirm
@@ -23,7 +23,7 @@ remove-nopasswd:
 	./scripts/remove-nopasswd.sh
 
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/rsztui
+	rm -f $(DESTDIR)$(BINDIR)/rogtui
 
 test:
 	$(CARGO) test

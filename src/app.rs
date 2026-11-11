@@ -601,7 +601,7 @@ impl App {
             status_err: false,
             modal: None,
             modal_scroll: Cell::new(0),
-            hotspot_ssid: "rsztui-hotspot".into(),
+            hotspot_ssid: "rogtui-hotspot".into(),
             mouse_targets: RefCell::new(Vec::new()),
             quit: false,
             last_slow: Instant::now(),
@@ -2379,7 +2379,7 @@ impl App {
 
     fn toggle_hotspot(&mut self) {
         if nm::hotspot_active() {
-            self.confirm("关闭热点", "关闭 rsztui-hotspot？", Pending::HotspotOff);
+            self.confirm("关闭热点", "关闭 rogtui-hotspot？", Pending::HotspotOff);
         } else {
             self.modal = Some(Modal::Hotspot(HotspotForm {
                 ssid: self.hotspot_ssid.clone(),
@@ -3061,7 +3061,7 @@ fn random_password() -> String {
             .map(|b| CHARS[*b as usize % CHARS.len()] as char)
             .collect();
     }
-    "rsztui2026".into()
+    "rogtui2026".into()
 }
 
 fn ip_form_summary(form: &IpForm) -> String {

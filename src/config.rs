@@ -148,10 +148,22 @@ fn default_presets() -> Vec<PowerPreset> {
 
 impl Config {
     pub fn path() -> PathBuf {
-        util::real_user_home().join(".config/rsztui/config.toml")
+        util::real_user_home().join(".config/rogtui/config.toml")
+    }
+
+    /// 1.4.0 起项目由 RszTui 更名为 RogTui：首次运行时把旧配置目录整体搬过来。
+    /// 目录同盘 rename，失败就按新路径重建默认配置，不做复制兜底。
+    fn migrate_old_dir() {
+        let home = util::real_user_home();
+        let old = home.join(".config/rsztui");
+        let new = home.join(".config/rogtui");
+        if old.exists() && !new.exists() {
+            let _ = fs::rename(&old, &new);
+        }
     }
 
     pub fn load() -> Result<Self> {
+        Self::migrate_old_dir();
         let path = Self::path();
         if !path.exists() {
             let cfg = Self::default();
@@ -246,7 +258,7 @@ mod tests {
 
     fn temp_config(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "rsztui-config-test-{}-{name}.toml",
+            "rogtui-config-test-{}-{name}.toml",
             std::process::id()
         ))
     }

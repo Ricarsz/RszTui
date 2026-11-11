@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn parses_amd_clock_line() {
-        let path = std::env::temp_dir().join("rsztui-test-sclk");
+        let path = std::env::temp_dir().join("rogtui-test-sclk");
         fs::write(&path, "0: 800Mhz *\n1: 1100Mhz \n2: 2700Mhz \n").unwrap();
         assert_eq!(amd_clock(&path), Some(800));
         let _ = fs::remove_file(path);

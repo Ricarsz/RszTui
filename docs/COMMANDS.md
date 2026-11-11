@@ -1,28 +1,28 @@
 # 命令与快捷键
 
-所有写操作需要 root：`sudo rsztui ...`。`rsztui doctor` 可以在普通用户下运行。
+所有写操作需要 root：`sudo rogtui ...`。`rogtui doctor` 可以在普通用户下运行。
 
 ## 全局
 
 ```bash
-sudo rsztui                 # 启动 TUI
-sudo rsztui status          # 状态汇总
-sudo rsztui --json status   # JSON 输出
-rsztui doctor               # 依赖/硬件检查（无需 sudo）
-rsztui --json doctor
+sudo rogtui                 # 启动 TUI
+sudo rogtui status          # 状态汇总
+sudo rogtui --json status   # JSON 输出
+rogtui doctor               # 依赖/硬件检查（无需 sudo）
+rogtui --json doctor
 ```
 
 ## 性能与功耗
 
 ```bash
-sudo rsztui profile get
-sudo rsztui profile set performance
-sudo rsztui profile default ac performance
-sudo rsztui profile default battery quiet
+sudo rogtui profile get
+sudo rogtui profile set performance
+sudo rogtui profile default ac performance
+sudo rogtui profile default battery quiet
 
-sudo rsztui power preset performance
-sudo rsztui power apply --pl1 45 --pl2 55 --pl3 65
-sudo rsztui power apply --gpu-tgp 70 --gpu-temp 80
+sudo rogtui power preset performance
+sudo rogtui power apply --pl1 45 --pl2 55 --pl3 65
+sudo rogtui power apply --gpu-tgp 70 --gpu-temp 80
 ```
 
 写功耗前会先读 `/sys/class/firmware-attributes/asus-armoury/attributes/<项>/` 的 min/max/current：越界值会被夹到固件范围并在输出里标出请求值（如 `= 35（请求 20）`），`min == max` 的项（固件当前没给写入口，典型是电池供电且 dGPU 关闭时的 `nv_tgp`）直接跳过。固件范围随供电/模式变化，插电后同一项可能又可写。每项写完会回读 `current_value` 校验，`power apply`/`power preset` 逐项输出 `已写入`/`跳过`/`失败`，不再因为某一项写不进而整条命令失败——全部失败时才返回非零，并在 stderr 提示「没有任何一项写进固件」。
@@ -30,16 +30,16 @@ sudo rsztui power apply --gpu-tgp 70 --gpu-temp 80
 ## 电池
 
 ```bash
-sudo rsztui battery info
-sudo rsztui battery limit 80
-sudo rsztui battery oneshot
+sudo rogtui battery info
+sudo rogtui battery limit 80
+sudo rogtui battery oneshot
 ```
 
 ## GPU
 
 ```bash
-sudo rsztui gpu get
-sudo rsztui gpu set hybrid --yes    # 需要重启
+sudo rogtui gpu get
+sudo rogtui gpu set hybrid --yes    # 需要重启
 ```
 
 `integrated` / `hybrid` / `ultimate` 三档。
@@ -47,50 +47,50 @@ sudo rsztui gpu set hybrid --yes    # 需要重启
 ## 网络
 
 ```bash
-sudo rsztui net status
-sudo rsztui net wifi list
-sudo rsztui net wifi connect "MyWiFi" --password 'secret'
-sudo rsztui net wifi connect "MyWiFi" --password 'secret' --no-up
-sudo rsztui net radio off
-sudo rsztui net ip show wired
-sudo rsztui net ip set wired --method manual \
+sudo rogtui net status
+sudo rogtui net wifi list
+sudo rogtui net wifi connect "MyWiFi" --password 'secret'
+sudo rogtui net wifi connect "MyWiFi" --password 'secret' --no-up
+sudo rogtui net radio off
+sudo rogtui net ip show wired
+sudo rogtui net ip set wired --method manual \
   --address 192.0.2.10/24 --gateway 192.0.2.1 --dns 1.1.1.1,8.8.8.8
-sudo rsztui net ip set wired --method auto --dns 1.1.1.1
+sudo rogtui net ip set wired --method auto --dns 1.1.1.1
 
-sudo rsztui net vpn list
-sudo rsztui net vpn up myvpn
-sudo rsztui net conn up wired
-sudo rsztui net conn delete old-connection
-sudo rsztui net hotspot on --password 'hotspot123' --ssid rsztui-hotspot
-sudo rsztui net hotspot off
+sudo rogtui net vpn list
+sudo rogtui net vpn up myvpn
+sudo rogtui net conn up wired
+sudo rogtui net conn delete old-connection
+sudo rogtui net hotspot on --password 'hotspot123' --ssid rogtui-hotspot
+sudo rogtui net hotspot off
 
-sudo rsztui net ping 1.1.1.1
-sudo rsztui net dns example.com
-sudo rsztui net cache status
-sudo rsztui net cache flush
-sudo rsztui net cache flush-neighbors
-sudo rsztui net cache size 4096
+sudo rogtui net ping 1.1.1.1
+sudo rogtui net dns example.com
+sudo rogtui net cache status
+sudo rogtui net cache flush
+sudo rogtui net cache flush-neighbors
+sudo rogtui net cache size 4096
 ```
 
 ## 风扇
 
 ```bash
-sudo rsztui fan list
-sudo rsztui fan save 我的配置
-sudo rsztui fan apply 我的配置
-sudo rsztui fan delete 我的配置
-sudo rsztui fan default
-sudo rsztui fan enable
-sudo rsztui fan disable
+sudo rogtui fan list
+sudo rogtui fan save 我的配置
+sudo rogtui fan apply 我的配置
+sudo rogtui fan delete 我的配置
+sudo rogtui fan default
+sudo rogtui fan enable
+sudo rogtui fan disable
 ```
 
 ## 灯光
 
 ```bash
-sudo rsztui aura status
-sudo rsztui aura next
-sudo rsztui aura prev
-sudo rsztui aura static ff8800
+sudo rogtui aura status
+sudo rogtui aura next
+sudo rogtui aura prev
+sudo rogtui aura static ff8800
 ```
 
 `aura status` 显示当前模式、亮度、颜色、速度、区域和支持的模式。
@@ -98,14 +98,14 @@ sudo rsztui aura static ff8800
 ## 服务
 
 ```bash
-sudo rsztui service status
-sudo rsztui service status sshd
-sudo rsztui service start asusd
-sudo rsztui service stop asusd
-sudo rsztui service restart asusd
-sudo rsztui service restart NetworkManager
-sudo rsztui service enable asus-shutdown --now
-sudo rsztui service disable asus-shutdown --now
+sudo rogtui service status
+sudo rogtui service status sshd
+sudo rogtui service start asusd
+sudo rogtui service stop asusd
+sudo rogtui service restart asusd
+sudo rogtui service restart NetworkManager
+sudo rogtui service enable asus-shutdown --now
+sudo rogtui service disable asus-shutdown --now
 ```
 
 服务名可以省略 `.service`。停止/重启 NetworkManager 会断网，停止 asusd 会失去 ASUS 控制。
@@ -195,11 +195,11 @@ sudo rsztui service disable asus-shutdown --now
 
 IPv4 编辑：`j/k` 选字段，`Enter` 切换方法/下一项，直接输入，`Backspace` 删除，`Ctrl+U` 清空，`a` 应用，`Esc` 取消。
 
-热点：`t` 打开表单，`Tab`/`↑↓` 切换 SSID 与密码，`Enter` 开启（连接 id 固定为 `rsztui-hotspot`）；热点已开启时再按 `t` 会确认关闭。`P` 修改当前选中（或当前已连接）Wi-Fi 的密码，改完自动重连。
+热点：`t` 打开表单，`Tab`/`↑↓` 切换 SSID 与密码，`Enter` 开启（连接 id 固定为 `rogtui-hotspot`）；热点已开启时再按 `t` 会确认关闭。`P` 修改当前选中（或当前已连接）Wi-Fi 的密码，改完自动重连。
 
 详情页的 IPv6 地址、网关和 DNS 为只读展示，配置仍由 NetworkManager 的默认策略管理。
 
-缓存面板：`f` 清空 DNS 缓存，`F` 清空邻居缓存，`e` 修改 DNS 缓存上限（写入 `/etc/systemd/resolved.conf.d/rsztui-cache.conf` 并重启 resolved），`r` 刷新统计，`Esc` 关闭。
+缓存面板：`f` 清空 DNS 缓存，`F` 清空邻居缓存，`e` 修改 DNS 缓存上限（写入 `/etc/systemd/resolved.conf.d/rogtui-cache.conf` 并重启 resolved），`r` 刷新统计，`Esc` 关闭。
 
 ### 服务
 
@@ -216,7 +216,7 @@ IPv4 编辑：`j/k` 选字段，`Enter` 切换方法/下一项，直接输入，
 
 ```bash
 # 非 root 调试只读功能
-RSZTUI_SKIP_ROOT_CHECK=1 ./target/debug/rsztui status
+ROGTUI_SKIP_ROOT_CHECK=1 ./target/debug/rogtui status
 
 cargo test
 cargo clippy --all-targets -- -D warnings

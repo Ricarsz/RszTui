@@ -748,7 +748,7 @@ mod hwmon_tests {
     #[test]
     fn celsius_filter_rejects_out_of_range() {
         let path =
-            std::env::temp_dir().join(format!("rsztui-celsius-{}.txt", std::process::id()));
+            std::env::temp_dir().join(format!("rogtui-celsius-{}.txt", std::process::id()));
         std::fs::write(&path, "45000\n").unwrap();
         assert_eq!(read_celsius(&path), Some(45.0));
         std::fs::write(&path, "200000\n").unwrap();

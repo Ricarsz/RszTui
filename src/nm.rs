@@ -382,7 +382,7 @@ pub fn set_dns_cache_size(size: u32) -> Result<()> {
     }
     let dir = Path::new("/etc/systemd/resolved.conf.d");
     fs::create_dir_all(dir).with_context(|| format!("无法创建 {}", dir.display()))?;
-    let path = dir.join("rsztui-cache.conf");
+    let path = dir.join("rogtui-cache.conf");
     fs::write(&path, format!("[Resolve]\nCacheSize={size}\n"))
         .with_context(|| format!("无法写入 {}", path.display()))?;
     util::run("systemctl", &["restart", "systemd-resolved"])?;
@@ -723,7 +723,7 @@ pub fn wifi_connect(
 
     content.push_str("\n[ipv4]\nmethod=auto\n");
 
-    let filename = format!("rsztui-{uuid}.nmconnection");
+    let filename = format!("rogtui-{uuid}.nmconnection");
     install_keyfile(&content, &filename)?;
     if activate {
         util::run("nmcli", &["connection", "up", "id", ssid])?;
@@ -732,7 +732,7 @@ pub fn wifi_connect(
 }
 
 pub fn hotspot(password: &str, ssid: &str) -> Result<()> {
-    let existing = find_connection("rsztui-hotspot")?;
+    let existing = find_connection("rogtui-hotspot")?;
     let uuid = existing
         .as_ref()
         .map(|c| c.uuid.clone())
@@ -741,11 +741,11 @@ pub fn hotspot(password: &str, ssid: &str) -> Result<()> {
         .as_ref()
         .and_then(|c| get_field(&c.name, "connection.filename").ok())
         .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "rsztui-hotspot.nmconnection".to_string());
+        .unwrap_or_else(|| "rogtui-hotspot.nmconnection".to_string());
 
     let mut content = String::new();
     content.push_str("[connection]\n");
-    content.push_str("id=rsztui-hotspot\n");
+    content.push_str("id=rogtui-hotspot\n");
     content.push_str(&format!("uuid={uuid}\n"));
     content.push_str("type=wifi\n");
     content.push_str("autoconnect=false\n");
@@ -760,18 +760,18 @@ pub fn hotspot(password: &str, ssid: &str) -> Result<()> {
     content.push_str("method=shared\n");
 
     install_keyfile(&content, &filename)?;
-    util::run("nmcli", &["connection", "up", "id", "rsztui-hotspot"])?;
+    util::run("nmcli", &["connection", "up", "id", "rogtui-hotspot"])?;
     Ok(())
 }
 
 pub fn hotspot_off() -> Result<()> {
-    let _ = util::run("nmcli", &["connection", "down", "id", "rsztui-hotspot"]);
+    let _ = util::run("nmcli", &["connection", "down", "id", "rogtui-hotspot"]);
     Ok(())
 }
 
 pub fn hotspot_active() -> bool {
     connections()
-        .map(|list| list.iter().any(|c| c.name == "rsztui-hotspot" && c.active))
+        .map(|list| list.iter().any(|c| c.name == "rogtui-hotspot" && c.active))
         .unwrap_or(false)
 }
 

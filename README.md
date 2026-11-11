@@ -1,6 +1,8 @@
-# RszTui
+# RogTui
 
 ASUS TUF 的终端控制台。Rust + [ratatui](https://ratatui.rs/)，底层调用 `asusctl` 和 NetworkManager 的 `nmcli`。
+
+> 本项目 1.4.0 前名为 **RszTui**，功能不变；首次运行会自动把 `~/.config/rsztui` 迁移到 `~/.config/rogtui`。
 
 目标：替代 `rog-control-center` 的日常功能——性能模式、电池、功耗、风扇曲线、灯光、网络和系统服务。
 
@@ -24,10 +26,10 @@ ASUS TUF 的终端控制台。Rust + [ratatui](https://ratatui.rs/)，底层调�
 ## 快速开始
 
 ```bash
-git clone https://github.com/Ricarsz/RszTui.git
-cd RszTui
+git clone https://github.com/Ricarsz/rogtui.git
+cd rogtui
 cd packaging/aur && paru -Bi
-sudo rsztui
+sudo rogtui
 ```
 
 ## 文档

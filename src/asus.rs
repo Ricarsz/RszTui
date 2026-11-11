@@ -441,9 +441,9 @@ pub struct FirmwareRange {
     pub max: i32,
 }
 
-/// 固件属性目录；测试里用 RSZTUI_FW_ATTRS 指向临时目录。
+/// 固件属性目录；测试里用 ROGTUI_FW_ATTRS 指向临时目录。
 fn firmware_attrs() -> std::path::PathBuf {
-    std::env::var_os("RSZTUI_FW_ATTRS")
+    std::env::var_os("ROGTUI_FW_ATTRS")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
             std::path::PathBuf::from("/sys/class/firmware-attributes/asus-armoury/attributes")
@@ -1141,13 +1141,13 @@ mod firmware_tests {
 
     #[test]
     fn reads_firmware_truth_and_flags_unwritable() {
-        let root = std::env::temp_dir().join(format!("rsztui-fw-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("rogtui-fw-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         attr(&root, "ppt_pl2_sppt", "30", "35", "65");
         attr(&root, "nv_tgp", "55", "0", "0");
         // SAFETY: 测试单线程改动本进程环境变量。
-        unsafe { std::env::set_var("RSZTUI_FW_ATTRS", &root) };
-        let _guard = EnvGuard("RSZTUI_FW_ATTRS".into());
+        unsafe { std::env::set_var("ROGTUI_FW_ATTRS", &root) };
+        let _guard = EnvGuard("ROGTUI_FW_ATTRS".into());
 
         let pl2 = firmware_range("ppt_pl2_sppt").expect("应读到固件范围");
         assert_eq!((pl2.current, pl2.min, pl2.max), (30, 35, 65));

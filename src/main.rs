@@ -15,7 +15,7 @@ use clap::Parser;
 use cli::Cli;
 
 fn main() {
-    // 恢复默认 SIGPIPE 行为，避免 `rsztui ... | head` 时 panic。
+    // 恢复默认 SIGPIPE 行为，避免 `rogtui ... | head` 时 panic。
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
@@ -24,7 +24,7 @@ fn main() {
 
     let is_doctor = matches!(&cli.command, Some(cli::Cmd::Doctor));
     if !is_doctor && !util::is_root() {
-        eprintln!("rsztui 需要 root 权限运行，请使用：sudo rsztui");
+        eprintln!("rogtui 需要 root 权限运行，请使用：sudo rogtui");
         std::process::exit(1);
     }
 

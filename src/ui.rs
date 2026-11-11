@@ -233,7 +233,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
 
     let left = Line::from(vec![
         Span::styled(
-            " RszTui ",
+            " RogTui ",
             Style::new().fg(Color::Black).bg(pal().accent).bold(),
         ),
         Span::raw("  "),
@@ -3996,7 +3996,7 @@ fn draw_cache_modal(frame: &mut Frame, area: Rect, app: &App) {
     ]));
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        " 修改缓存上限会写入 /etc/systemd/resolved.conf.d/rsztui-cache.conf",
+        " 修改缓存上限会写入 /etc/systemd/resolved.conf.d/rogtui-cache.conf",
         Style::new().fg(pal().dim),
     )));
 
@@ -4026,7 +4026,7 @@ fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled("  版本      ", Style::new().fg(pal().dim)),
             Span::styled(
-                format!("RszTui {}", env!("CARGO_PKG_VERSION")),
+                format!("RogTui {}", env!("CARGO_PKG_VERSION")),
                 Style::new().fg(pal().text),
             ),
         ]),
@@ -4129,7 +4129,7 @@ fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
     }
     if app.deps.has_warnings() {
         lines.push(Line::from(Span::styled(
-            "  运行 rsztui doctor 查看安装/启动命令",
+            "  运行 rogtui doctor 查看安装/启动命令",
             Style::new().fg(pal().warn),
         )));
     }

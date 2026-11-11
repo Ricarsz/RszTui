@@ -99,7 +99,7 @@ impl Report {
                 }
             }
         }
-        lines.push("运行 `rsztui doctor` 查看完整检查结果。".into());
+        lines.push("运行 `rogtui doctor` 查看完整检查结果。".into());
         Some(lines.join("\n"))
     }
 }

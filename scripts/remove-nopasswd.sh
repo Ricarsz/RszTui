@@ -1,10 +1,10 @@
 #!/bin/sh
-# 移除 rsztui 的免密启动设置。
+# 移除 rogtui 的免密启动设置。
 set -eu
 
-MARKER="# managed by rsztui"
-WRAPPER=/usr/local/bin/rsztui
-SUDOERS=/etc/sudoers.d/rsztui
+MARKER="# managed by rogtui"
+WRAPPER=/usr/local/bin/rogtui
+SUDOERS=/etc/sudoers.d/rogtui
 
 if [ "$(id -u)" -ne 0 ]; then
 	exec sudo "$0" "$@"
@@ -15,7 +15,7 @@ if [ -e "$WRAPPER" ]; then
 		rm -f "$WRAPPER"
 		echo "已删除 $WRAPPER"
 	else
-		echo "$WRAPPER 不是 rsztui 管理的文件，跳过"
+		echo "$WRAPPER 不是 rogtui 管理的文件，跳过"
 	fi
 fi
 
@@ -24,4 +24,4 @@ if [ -e "$SUDOERS" ]; then
 	echo "已删除 $SUDOERS"
 fi
 
-echo "免密启动已移除，之后需要 sudo rsztui。"
+echo "免密启动已移除，之后需要 sudo rogtui。"

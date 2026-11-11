@@ -1,8 +1,8 @@
-pkgbase = rsztui
+pkgbase = rogtui
 	pkgdesc = Terminal control panel for ASUS TUF laptops using asusctl and NetworkManager
-	pkgver = 1.2.2
+	pkgver = 1.3.3
 	pkgrel = 1
-	url = https://github.com/Ricarsz/RszTui
+	url = https://github.com/Ricarsz/rogtui
 	arch = x86_64
 	arch = aarch64
 	license = MIT
@@ -11,7 +11,7 @@ pkgbase = rsztui
 	depends = gcc-libs
 	optdepends = asusctl: ASUS performance, battery, fan and lighting control
 	optdepends = networkmanager: Wi-Fi, IPv4/DNS, VPN and hotspot management
-	source = rsztui-1.2.2.tar.gz::https://github.com/Ricarsz/RszTui/archive/refs/tags/v1.2.2.tar.gz
-	sha256sums = 83ef62a55f83ca31529bbfbd37da3ab1046913f74495d60763ca2b6d8f6a1f09
+	source = rogtui-1.3.3.tar.gz::https://github.com/Ricarsz/rogtui/archive/refs/tags/v1.3.3.tar.gz
+	sha256sums = 0311e96eec9534413a1933491448a0c9aff8f28c70032686f67372fec5c1989c
 
-pkgname = rsztui
+pkgname = rogtui
