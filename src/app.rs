@@ -520,8 +520,9 @@ impl App {
         });
         {
             let tx = snap_tx;
+            let nvidia_probe = cfg.gpu.probe();
             std::thread::spawn(move || {
-                let mut collector = Collector::default();
+                let mut collector = Collector::default().with_nvidia_probe(nvidia_probe);
                 loop {
                     if tx.send(collector.sample()).is_err() {
                         break;

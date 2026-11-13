@@ -40,6 +40,28 @@ impl Vendor {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NvidiaProbe {
+    /// 只在该卡处于 active 且确有进程占用 `/dev/nvidia*` 时调用 nvidia-smi（默认）。
+    /// 避免轮询本身把独显从 runtime suspend 拉起来。
+    #[default]
+    Auto,
+    /// 只要卡处于 active 就调用。
+    Always,
+    /// 从不调用，只报 sysfs 能拿到的状态。
+    Never,
+}
+
+impl NvidiaProbe {
+    pub fn from_name(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "always" | "on" | "true" | "1" => Self::Always,
+            "never" | "off" | "false" | "0" => Self::Never,
+            _ => Self::Auto,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Gpu {
     pub vendor: Vendor,
@@ -70,6 +92,8 @@ pub struct Stats {
     pub pcie: String,
     pub driver_version: String,
     pub runtime: String,
+    /// NVIDIA 卡处于 active、但按采样策略没有调用 nvidia-smi（避免把卡唤醒）。
+    pub probe_skipped: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -94,7 +118,8 @@ pub fn discover() -> Vec<Gpu> {
         }
         cards.push(entry.path());
     }
-    cards.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    // 按 card 序号数值排序：字符串排序会把 card10 排到 card2 前面。
+    cards.sort_by_key(|path| card_index(path));
 
     let mut pending = Vec::new();
     for card in &cards {
@@ -296,12 +321,22 @@ fn lspci_names() -> HashMap<String, String> {
     map
 }
 
-/// 采样所有 GPU。NVIDIA 处于 runtime suspend 时不调用 nvidia-smi，避免把它唤醒。
-pub fn sample(gpus: &[Gpu]) -> Vec<Status> {
-    let any_active_nvidia = gpus
+/// 采样所有 GPU。
+///
+/// NVIDIA 的读数只能走 nvidia-smi（NVML），而**任何一次调用都会把 runtime suspend 的独显唤醒**。
+/// 所以默认策略 [`NvidiaProbe::Auto`] 只在独显既 active、又有进程真的占着 `/dev/nvidia*` 时才调用，
+/// 其余时间只报 sysfs 能拿到的状态；调用方可以通过配置改成 always / never。
+pub fn sample(gpus: &[Gpu], probe: NvidiaProbe) -> Vec<Status> {
+    let nvidia_active = gpus
         .iter()
         .any(|gpu| gpu.vendor == Vendor::Nvidia && runtime_of(gpu) == "active");
-    let rows = if any_active_nvidia {
+    let query_nvidia = nvidia_active
+        && match probe {
+            NvidiaProbe::Never => false,
+            NvidiaProbe::Always => true,
+            NvidiaProbe::Auto => nvidia_in_use(),
+        };
+    let rows = if query_nvidia {
         nvidia_rows()
     } else {
         Vec::new()
@@ -310,7 +345,12 @@ pub fn sample(gpus: &[Gpu]) -> Vec<Status> {
         .map(|gpu| Status {
             gpu: gpu.clone(),
             stats: match gpu.vendor {
-                Vendor::Nvidia => nvidia_stats(gpu, &rows),
+                Vendor::Nvidia => {
+                    let mut stats = nvidia_stats(gpu, &rows);
+                    // 卡活着却没采样：给界面一个说明，免得看起来像读数失败。
+                    stats.probe_skipped = nvidia_active && !query_nvidia;
+                    stats
+                }
                 Vendor::Amd | Vendor::Intel => drm_stats(gpu),
                 Vendor::Other => Stats {
                     runtime: runtime_of(gpu),
@@ -375,6 +415,62 @@ struct SmiRow {
     pcie_gen: String,
     width: String,
     driver: String,
+}
+
+/// 是否有进程真的占着 NVIDIA 设备节点（nvidia-smi 自己只短暂打开，采样前不会命中）。
+///
+/// `/proc/<pid>/fd` 只有属主和 root 可读，所以普通用户运行时只能看到自己名下的客户端；
+/// 桌面场景足够 —— 独显的占用者通常就是当前用户。
+fn nvidia_in_use() -> bool {
+    static CACHE: OnceLock<Mutex<Option<(Instant, bool)>>> = OnceLock::new();
+    const TTL: Duration = Duration::from_secs(5);
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    {
+        let guard = cache.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some((at, value)) = guard.as_ref()
+            && at.elapsed() < TTL
+        {
+            return *value;
+        }
+    }
+    let value = any_open_nvidia_fd();
+    let mut guard = cache.lock().unwrap_or_else(|err| err.into_inner());
+    *guard = Some((Instant::now(), value));
+    value
+}
+
+fn any_open_nvidia_fd() -> bool {
+    let Ok(procs) = fs::read_dir("/proc") else {
+        return false;
+    };
+    for entry in procs.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.is_empty() || !name.bytes().all(|byte| byte.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(fds) = fs::read_dir(entry.path().join("fd")) else {
+            continue;
+        };
+        for fd in fds.flatten() {
+            if let Ok(target) = fs::read_link(fd.path())
+                && target.to_str().is_some_and(|path| path.starts_with("/dev/nvidia"))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn card_index(path: &Path) -> u32 {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("card"))
+        .and_then(|digits| digits.parse().ok())
+        .unwrap_or(u32::MAX)
 }
 
 fn nvidia_rows() -> Vec<SmiRow> {
@@ -525,6 +621,29 @@ fn read_u64(path: impl AsRef<Path>) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_nvidia_probe_names() {
+        assert_eq!(NvidiaProbe::from_name("auto"), NvidiaProbe::Auto);
+        assert_eq!(NvidiaProbe::from_name(" always "), NvidiaProbe::Always);
+        assert_eq!(NvidiaProbe::from_name("NEVER"), NvidiaProbe::Never);
+        assert_eq!(NvidiaProbe::from_name("whatever"), NvidiaProbe::Auto);
+    }
+
+    #[test]
+    fn sorts_cards_by_number_not_string() {
+        let mut cards = [
+            PathBuf::from("/sys/class/drm/card10"),
+            PathBuf::from("/sys/class/drm/card2"),
+            PathBuf::from("/sys/class/drm/card0"),
+        ];
+        cards.sort_by_key(|path| card_index(path));
+        let names: Vec<String> = cards
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["card0", "card2", "card10"]);
+    }
 
     #[test]
     fn maps_pcie_speed_to_generation() {

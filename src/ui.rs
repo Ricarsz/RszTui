@@ -1687,6 +1687,11 @@ fn draw_gpu_card(frame: &mut Frame, area: Rect, status: &gpu::Status) {
             format!("{value:.1}°C"),
             Style::new().fg(temp_color(value)).bold(),
         )),
+        // 独显活着但按策略没采样（避免轮询把卡唤醒），不是读数失败。
+        None if status.stats.probe_skipped => temp_row.push(Span::styled(
+            "未采样（无进程占用）",
+            Style::new().fg(pal().dim),
+        )),
         None => temp_row.push(Span::styled("-", Style::new().fg(pal().dim))),
     }
     if let Some(value) = status.stats.hotspot {

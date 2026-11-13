@@ -41,6 +41,21 @@ rate_style = "binary"  # binary / decimal / bits
 
 即使以 sudo 运行，也会通过 `SUDO_USER` 写入真实用户家目录，而不是 `/root`。
 
+## GPU 采样
+
+显卡页的 NVIDIA 读数只能走 `nvidia-smi`（NVML），而任何一次 NVML 调用都会把处于 runtime suspend 的独显唤醒 —— 轮询本身就会挡住独显休眠。默认策略只在「卡已 active 且确有进程占用 `/dev/nvidia*`」时才调用，其余时间只显示 sysfs 能拿到的状态，卡片上标注「未采样（无进程占用）」。
+
+```toml
+[gpu]
+nvidia_probe = "auto"   # auto / always / never
+```
+
+- `auto`：默认。只在独显被真正占用时采样，避免轮询把卡从 D3 拉起来
+- `always`：只要卡 active 就采样（1.4.0 及以前的行为）
+- `never`：完全不调用 `nvidia-smi`，显卡页只剩 sysfs 状态
+
+AMD/Intel 走 DRM + hwmon，不受该选项影响。
+
 ## 持久化
 
 - 性能模式、电池上限、PPT/TGP 写入 `/etc/asusd/asusd.ron`，由 **asusd** 在开机和 AC/电池切换时自动恢复。

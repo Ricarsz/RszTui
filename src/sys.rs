@@ -71,9 +71,17 @@ pub struct Collector {
     hwmon: Option<HwmonCache>,
     /// 各核 scaling_cur_freq 路径，首次枚举后复用，省掉每秒 read_dir。
     freq_paths: Option<Vec<PathBuf>>,
+    /// nvidia-smi 的采样策略（默认 auto：只在独显确有占用时调用）。
+    nvidia_probe: gpu::NvidiaProbe,
 }
 
 impl Collector {
+    /// 设置 nvidia-smi 的采样策略（默认 Auto：只在独显确有进程占用时调用）。
+    pub fn with_nvidia_probe(mut self, probe: gpu::NvidiaProbe) -> Self {
+        self.nvidia_probe = probe;
+        self
+    }
+
     pub fn sample(&mut self) -> Snapshot {
         let now = Instant::now();
         let mut snap = Snapshot::default();
@@ -142,7 +150,7 @@ impl Collector {
         if self.gpus.is_none() {
             self.gpus = Some(gpu::discover());
         }
-        let gpus = gpu::sample(self.gpus.as_deref().unwrap_or(&[]));
+        let gpus = gpu::sample(self.gpus.as_deref().unwrap_or(&[]), self.nvidia_probe);
         snap.gpu_load = gpus.iter().filter_map(|status| status.stats.load).max();
         if let Some((used, total)) = disk_usage("/") {
             snap.disk_used = used;

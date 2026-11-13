@@ -14,10 +14,38 @@ use crate::util;
 pub struct Config {
     #[serde(default)]
     pub ui: UiConfig,
+    #[serde(default)]
+    pub gpu: GpuConfig,
     #[serde(default = "default_presets")]
     pub power_presets: Vec<PowerPreset>,
     #[serde(default)]
     pub fan_presets: Vec<FanPreset>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuConfig {
+    /// nvidia-smi（NVML）采样策略：auto / always / never。
+    /// NVML 调用会唤醒 runtime suspend 的独显，auto 只在卡确实被进程占用时才采样。
+    #[serde(default = "default_nvidia_probe")]
+    pub nvidia_probe: String,
+}
+
+impl GpuConfig {
+    pub fn probe(&self) -> crate::gpu::NvidiaProbe {
+        crate::gpu::NvidiaProbe::from_name(&self.nvidia_probe)
+    }
+}
+
+impl Default for GpuConfig {
+    fn default() -> Self {
+        Self {
+            nvidia_probe: default_nvidia_probe(),
+        }
+    }
+}
+
+fn default_nvidia_probe() -> String {
+    "auto".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +110,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             ui: UiConfig::default(),
+            gpu: GpuConfig::default(),
             power_presets: default_presets(),
             fan_presets: Vec::new(),
         }
